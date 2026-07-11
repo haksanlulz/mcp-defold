@@ -1,0 +1,38 @@
+{
+  "name": "mcp-defold",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "MCP (Model Context Protocol) server for driving Defold games through an in-game debug bridge: build, launch, play, and read a running game from any MCP client.",
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "defold",
+    "game-engine",
+    "playtesting",
+    "llm",
+    "ai"
+  ],
+  "license": "MIT",
+  "author": "Abishai James",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/haksanlulz/mcp-defold.git"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "tsx index.ts",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  }
+}

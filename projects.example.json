@@ -1,0 +1,8 @@
+{
+  "mygame": {
+    "root": "C:/path/to/your/defold-project",
+    "port": 17890,
+    "runScript": "tools/run-bridged.ps1",
+    "testScript": "scripts/run-tests.ps1"
+  }
+}
