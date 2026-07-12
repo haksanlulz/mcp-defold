@@ -18,7 +18,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import net from "node:net";
 import { spawn } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
@@ -130,8 +130,31 @@ function killTree(child: ReturnType<typeof spawn>) {
   }
 }
 
+// A missing cwd makes spawn fail with the SAME `spawn pwsh ENOENT` as a
+// missing pwsh binary. Check the project root on disk first so the two cases
+// get distinct, actionable messages instead of one opaque ENOENT.
+function ensureRoot(cwd: string) {
+  if (!existsSync(cwd)) {
+    throw new Error(
+      `Defold project root ${cwd} not found: check the path in projects.json`,
+    );
+  }
+}
+
+// Turn a spawn 'error' into something a caller can act on. With the root
+// verified by ensureRoot, an ENOENT here means pwsh itself is not on PATH.
+export function translateSpawnError(e: NodeJS.ErrnoException): Error {
+  if (e.code === "ENOENT") {
+    return new Error(
+      "PowerShell 7 (pwsh) not found on PATH: install it or check PATH",
+    );
+  }
+  return new Error(`failed to launch pwsh: ${e.message}`);
+}
+
 function runPwsh(args: string[], cwd: string, timeoutMs: number): Promise<{ code: number; out: string }> {
   return new Promise((resolve, reject) => {
+    ensureRoot(cwd);
     const child = spawn("pwsh", ["-NoProfile", ...args], { cwd });
     let out = "";
     const timer = setTimeout(() => {
@@ -146,7 +169,7 @@ function runPwsh(args: string[], cwd: string, timeoutMs: number): Promise<{ code
     });
     child.on("error", (e) => {
       clearTimeout(timer);
-      reject(e);
+      reject(translateSpawnError(e));
     });
   });
 }
@@ -162,6 +185,7 @@ function runPwshUntilMarker(
   opts: { success: RegExp; failure: RegExp; timeoutMs: number },
 ): Promise<{ ok: boolean; out: string }> {
   return new Promise((resolve, reject) => {
+    ensureRoot(cwd);
     const child = spawn("pwsh", ["-NoProfile", ...args], { cwd });
     let out = "";
     let settled = false;
@@ -187,7 +211,7 @@ function runPwshUntilMarker(
     child.stdout.on("data", scan);
     child.stderr.on("data", scan);
     child.on("exit", () => setTimeout(() => finish({ ok: opts.success.test(out), out }), 50));
-    child.on("error", (e) => finish(e));
+    child.on("error", (e) => finish(translateSpawnError(e)));
   });
 }
 
@@ -320,6 +344,21 @@ export function createServer(projects: Record<string, Project> = loadProjects())
     const p = resolveProject(args);
     switch (name) {
       case "defold_run": {
+        // Preflight: if a bridged game already answers on this port, refuse.
+        // Launching a second instance would leave us silently driving the
+        // stale one (the new engine can't bind the port the old one holds).
+        let alreadyLive = false;
+        try {
+          await bridgeCall({ cmd: "ping" }, p.port, 2000);
+          alreadyLive = true;
+        } catch {
+          // nothing answered (connection refused / timeout): safe to launch
+        }
+        if (alreadyLive) {
+          throw new Error(
+            `a bridged game is already running on port ${p.port}; stop it with defold_stop first`,
+          );
+        }
         const a = [p.runScript];
         if (args.skip_build) a.push("-SkipBuild");
         const r = await runPwshUntilMarker(a, p.root, {

@@ -5,7 +5,7 @@ import net from "node:net";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createServer, loadProjects } from "../server";
+import { bridgeCall, createServer, loadProjects, translateSpawnError, type Project } from "../server.js";
 
 // A fake in-process bridge: answers the wire protocol so tool handlers can be
 // tested end to end without Defold, a build, or a real game.
@@ -55,14 +55,27 @@ beforeAll(async () => {
 
 afterAll(() => bridgeServer.close());
 
-async function connect(): Promise<Client> {
-  const server = createServer({
-    testgame: { root: ".", port: bridgePort, runScript: "run.ps1" },
-  });
+async function connectWith(proj: Project): Promise<Client> {
+  const server = createServer({ testgame: proj });
   const client = new Client({ name: "test", version: "1.0.0" }, { capabilities: {} });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
   return client;
+}
+
+async function connect(): Promise<Client> {
+  return connectWith({ root: ".", port: bridgePort, runScript: "run.ps1" });
+}
+
+// Bind an ephemeral port then release it, so a later connect is refused
+// deterministically (no game, nothing listening).
+async function deadPort(): Promise<number> {
+  const srv = net.createServer();
+  const port = await new Promise<number>((r) =>
+    srv.listen(0, "127.0.0.1", () => r((srv.address() as net.AddressInfo).port)),
+  );
+  await new Promise<void>((r) => srv.close(() => r()));
+  return port;
 }
 
 function textOf(res: any): string {
@@ -180,6 +193,50 @@ describe("mcp-defold server", () => {
       client.callTool({ name: "defold_test", arguments: {} }),
     ).rejects.toThrow(/no testScript/);
   });
+
+  it("defold_run refuses when a bridged game already answers on the port", async () => {
+    // connect() points testgame at the live fake bridge, so the preflight ping
+    // succeeds and defold_run must refuse rather than launch a second instance.
+    const client = await connect();
+    await expect(
+      client.callTool({ name: "defold_run", arguments: {} }),
+    ).rejects.toThrow(/already running on port .*defold_stop/);
+  });
+
+  it("defold_run reports a clear error when the project root is missing", async () => {
+    // Point at a dead port so the preflight passes, then the pre-spawn disk
+    // check must fire instead of a raw spawn ENOENT.
+    const port = await deadPort();
+    const client = await connectWith({ root: "C:/mcp-defold-no-such-root", port, runScript: "run.ps1" });
+    await expect(
+      client.callTool({ name: "defold_run", arguments: {} }),
+    ).rejects.toThrow(/project root .* not found: check the path in projects\.json/);
+  });
+
+  it("defold_test reports a clear error when the project root is missing", async () => {
+    // defold_test has no preflight; the pre-spawn disk check in runPwsh guards it.
+    const client = await connectWith({
+      root: "C:/mcp-defold-no-such-root",
+      port: bridgePort,
+      runScript: "run.ps1",
+      testScript: "t.ps1",
+    });
+    await expect(
+      client.callTool({ name: "defold_test", arguments: {} }),
+    ).rejects.toThrow(/project root .* not found/);
+  });
+});
+
+describe("translateSpawnError", () => {
+  it("translates pwsh ENOENT into a PATH error", () => {
+    const e: NodeJS.ErrnoException = Object.assign(new Error("spawn pwsh ENOENT"), { code: "ENOENT" });
+    expect(translateSpawnError(e).message).toMatch(/PowerShell 7 \(pwsh\) not found on PATH/);
+  });
+
+  it("passes non-ENOENT spawn errors through with context", () => {
+    const e: NodeJS.ErrnoException = Object.assign(new Error("boom"), { code: "EACCES" });
+    expect(translateSpawnError(e).message).toMatch(/failed to launch pwsh: boom/);
+  });
 });
 
 describe("loadProjects", () => {
@@ -220,5 +277,88 @@ describe("loadProjects", () => {
     writeFileSync(file, JSON.stringify({ g: { root: ".", port: 1, runScript: "r.ps1", testScript: 5 } }));
     expect(() => loadProjects(file)).toThrow(/testScript/);
     rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+describe("bridgeCall failure paths", () => {
+  // A server that accepts the connection but never replies: forces the timeout.
+  // Track the accepted sockets so close() can destroy them, otherwise srv.close()
+  // waits forever on the connection the client abandons when it times out.
+  async function silentServer(): Promise<{ port: number; close: () => Promise<void> }> {
+    const sockets: net.Socket[] = [];
+    const srv = net.createServer((sock) => {
+      sockets.push(sock);
+      sock.on("error", () => {}); // swallow ECONNRESET when the client bails
+    });
+    const port = await new Promise<number>((r) =>
+      srv.listen(0, "127.0.0.1", () => r((srv.address() as net.AddressInfo).port)),
+    );
+    return {
+      port,
+      close: () =>
+        new Promise<void>((r) => {
+          for (const s of sockets) s.destroy();
+          srv.close(() => r());
+        }),
+    };
+  }
+
+  it("bridgeCall rejects with a timeout when the bridge never replies", async () => {
+    const s = await silentServer();
+    try {
+      await expect(bridgeCall({ cmd: "ping" }, s.port, 100)).rejects.toThrow(/bridge timeout after 100ms/);
+    } finally {
+      await s.close();
+    }
+  });
+
+  it("bridgeCall rejects as unreachable when nothing is listening", async () => {
+    const port = await deadPort();
+    await expect(bridgeCall({ cmd: "ping" }, port, 1000)).rejects.toThrow(/bridge unreachable/);
+  });
+
+  it("bridgeCall rejects when the bridge sends a non-JSON line", async () => {
+    const srv = net.createServer((sock) => {
+      sock.on("error", () => {}); // swallow ECONNRESET when the client destroys its side
+      sock.on("data", () => {
+        sock.write("this is not json\n");
+        sock.end();
+      });
+    });
+    const port = await new Promise<number>((r) =>
+      srv.listen(0, "127.0.0.1", () => r((srv.address() as net.AddressInfo).port)),
+    );
+    try {
+      await expect(bridgeCall({ cmd: "ping" }, port, 1000)).rejects.toThrow(/non-JSON/);
+    } finally {
+      await new Promise<void>((r) => srv.close(() => r()));
+    }
+  });
+
+  it("bridgeCall reassembles a large reply split across TCP chunks", async () => {
+    const blob = "x".repeat(70000); // larger than one TCP segment: exercises the chunk buffer
+    const srv = net.createServer((sock) => {
+      sock.on("error", () => {}); // swallow ECONNRESET when the client destroys its side
+      sock.on("data", () => {
+        const payload = JSON.stringify({ ok: true, blob });
+        const half = Math.floor(payload.length / 2);
+        // deliver the JSON in pieces with the newline delimiter last, so the
+        // "wait for the newline byte" reassembly path is what stitches it back
+        sock.write(payload.slice(0, half));
+        sock.write(payload.slice(half));
+        sock.write("\n");
+        sock.end();
+      });
+    });
+    const port = await new Promise<number>((r) =>
+      srv.listen(0, "127.0.0.1", () => r((srv.address() as net.AddressInfo).port)),
+    );
+    try {
+      const res = await bridgeCall({ cmd: "ping" }, port, 2000);
+      expect(res.ok).toBe(true);
+      expect(res.blob).toHaveLength(70000);
+    } finally {
+      await new Promise<void>((r) => srv.close(() => r()));
+    }
   });
 });

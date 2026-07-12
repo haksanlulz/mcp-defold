@@ -49,6 +49,28 @@ end
 
 -- ---- protocol plumbing (usually no changes needed) -------------------------
 
+-- Write an entire frame to the (non-blocking) client socket before it closes.
+-- On a non-blocking socket, send() can accept only part of the data: it returns
+-- the index of the last byte sent, or `nil, "timeout", last_byte_sent` when it
+-- would block partway through. Sending once and closing (the old behavior)
+-- truncated any frame larger than the OS send buffer. Loop from the byte after
+-- the last one sent until the whole frame is out.
+local function send_all(sock, data)
+  local i, n = 1, #data
+  while i <= n do
+    local last, err, sent = sock:send(data, i)
+    if last then
+      i = last + 1                 -- success: last = index of last byte sent
+    elseif err == "timeout" then
+      i = (sent or i - 1) + 1       -- partial write: resume after last byte sent
+      socket.select(nil, { sock })  -- wait until writable, don't busy-spin
+    else
+      return nil, err              -- "closed" or a real error: nothing more to do
+    end
+  end
+  return true
+end
+
 local function respond(req)
   if req.cmd == "ping" then
     return { ok = true }
@@ -95,7 +117,7 @@ function M.update()
     local ok, req = pcall(json.decode, buf .. line)
     buf = ""
     local res = ok and respond(req) or { error = "bad json" }
-    client:send(json.encode(res) .. "\n")
+    send_all(client, json.encode(res) .. "\n")
     client:close()
     client = nil
   elseif err == "closed" then
