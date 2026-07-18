@@ -53,12 +53,23 @@ Two things, both on the game side (this server is just the client):
 
 The screen is text on purpose: compose whatever view carries your game's state (an ASCII map + HUD for a roguelike, a score readout for an arcade game).
 
+## Limitations
+
+- Screens are text frames composed by the game's bridge; there are no pixel screenshots.
+- `defold_input` presses and releases each trigger; nothing can be held down.
+- Bridge input drives the in-game controller, not the GUI front-end; `defold_start` exists because injected input can't get past menus.
+- Run and test scripts are invoked through `pwsh`; there is no other runner.
+
 ## Develop
 
 ```bash
 npm test          # vitest: tool handlers against a fake in-process bridge (no Defold needed)
 npm run typecheck
 ```
+
+## AI assistance
+
+This project was built with AI assistance (Claude). Correctness was established by the test suite (tool handlers driven end-to-end through a real MCP client against a fake in-process bridge that speaks the actual wire protocol, plus failure-path tests for the TCP layer) and by playtesting my own games with it. I review the code and am responsible for it.
 
 ## License
 

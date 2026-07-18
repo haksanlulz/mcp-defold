@@ -14,7 +14,7 @@ working skeleton.
 
 | cmd | request extras | response |
 |---|---|---|
-| `ping` | — | `{"ok": true}` (used by run scripts as the liveness check; reachable via `defold_bridge`) |
+| `ping` | — | `{"ok": true}` (liveness check: used by run scripts and by `defold_run`'s already-running preflight; reachable via `defold_bridge`) |
 | `screen` | — | `{"frame": "<composed text view>"}` |
 | `state` | — | any JSON object (position, health, flags: your call) |
 | `input` | `"trigger": "<action id>"` | `{"ok": true}`; injects the action as pressed+released |
