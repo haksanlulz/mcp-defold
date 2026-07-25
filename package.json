@@ -24,7 +24,8 @@
   "scripts": {
     "start": "tsx index.ts",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "smoke": "tsx smoke.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0"

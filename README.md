@@ -64,12 +64,13 @@ The screen is text on purpose: compose whatever view carries your game's state (
 
 ```bash
 npm test          # vitest: tool handlers against a fake in-process bridge (no Defold needed)
+npm run smoke     # spawn the real server over stdio and exercise its error paths (offline)
 npm run typecheck
 ```
 
 ## AI assistance
 
-This project was built with AI assistance (Claude). Correctness was established by the test suite (tool handlers driven end-to-end through a real MCP client against a fake in-process bridge that speaks the actual wire protocol, plus failure-path tests for the TCP layer) and by playtesting my own games with it. I review the code and am responsible for it.
+This project was built with AI assistance (Claude). Correctness was established by the test suite (tool handlers driven end-to-end through a real MCP client against a fake in-process bridge that speaks the actual wire protocol, plus failure-path tests for the TCP layer), an offline smoke run that spawns the real server over stdio and checks its error paths (`npm run smoke`), and playtesting my own games with it. I review the code and am responsible for it.
 
 ## License
 
