@@ -95,8 +95,13 @@ export function bridgeCall(req: BridgeReq, port: number, timeoutMs = 8000): Prom
     }, timeoutMs);
     sock.on("connect", () => sock.write(JSON.stringify(req) + "\n"));
     sock.on("data", (d) => {
-      chunks.push(d);
-      if (!d.includes(0x0a)) return; // wait for the newline byte; decode once, chunk-split-safe
+      // A socket emits Buffers unless setEncoding() was called, which this one
+      // never does -- so `d` is a Buffer at runtime. @types/node 26 types the
+      // union honestly rather than assuming, so narrow instead of asserting:
+      // a cast would be a lie the day someone adds an encoding.
+      const buf = Buffer.isBuffer(d) ? d : Buffer.from(d, "utf-8");
+      chunks.push(buf);
+      if (!buf.includes(0x0a)) return; // wait for the newline byte; decode once, chunk-split-safe
       const line = Buffer.concat(chunks).toString("utf-8").split("\n", 1)[0];
       finish(() => {
         try {
