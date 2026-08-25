@@ -1,0 +1,44 @@
+name: CI
+
+# The "a stranger clones this and runs npm test" channel. Until now this repo had
+# no CI at all, so its suite only ever ran on the author's machine with whatever
+# environment happened to be loaded there. That is not a channel, it is a habit —
+# and the sibling mcp-fairrent shipped four red commits in a row precisely because
+# a local shell variable masked a failure CI would have caught on the first push.
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+# Read-only: this workflow checks out and tests, and needs no write scope.
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # package.json declares engines >=18, but the DEV toolchain floor is
+        # higher than the runtime floor: vitest pulls a vite that requires
+        # ^20.19 || >=22.12, so `npm ci` cannot install on 18 here. The server
+        # runs under tsx and has no build step, so there is no tarball stage to
+        # prove the lower bound against.
+        node: ["20", "22"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      # Unlike the sibling scryfall server, this smoke is OFFLINE — it spawns the
+      # real server over stdio and checks the error paths and the run-script
+      # marker contract without touching a network or a running game. That makes
+      # it safe to run on every push, and it is the only rung that exercises the
+      # actual process boundary rather than an imported module.
+      - run: npm run smoke
