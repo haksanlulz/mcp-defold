@@ -1,0 +1,54 @@
+version: 2
+
+# Why this file exists: alerts without a patch route are just anxiety.
+#
+# Enabling Dependabot alerts on this account surfaced ~106 findings across nine
+# repos in one go. Almost all of them were transitive: hono, express and their
+# tree arrive inside @modelcontextprotocol/sdk to support HTTP transports this
+# server never imports (pinned by test/no-http-stack.test.ts), and vite/esbuild
+# arrive under vitest and never ship at all.
+#
+# Two settings do the real work here.
+#
+# GROUPS. hono alone published 3-9 advisories per MONTH through 2026, and each
+# one ungrouped is a separate pull request against a repo whose executed path it
+# cannot reach. Grouped, a month of that is one PR. The failure mode being
+# avoided is not noise for its own sake: it is a maintainer who learns to close
+# Dependabot PRs unread, and then closes the one that mattered.
+#
+# SCHEDULE weekly, not daily. A daily cadence on a hobby-scale repo produces
+# more PRs than anyone reviews.
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 3
+    groups:
+      # The shipped surface. This repo has exactly ONE runtime dependency, so
+      # this group is small on purpose -- and a PR landing here deserves a real
+      # look, because it changes what users install.
+      production:
+        dependency-type: production
+        update-types: [minor, patch]
+      # Everything that never leaves the machine: vitest and its tree, tsx,
+      # typescript, @types/node. Safe to batch.
+      development:
+        dependency-type: development
+        update-types: [minor, patch]
+    # Majors stay manual. @types/node 26 broke a sibling server's typecheck by
+    # correctly narrowing a socket callback to `string | Buffer`, and that was a
+    # real fix worth making by hand rather than merging on green CI.
+    ignore:
+      - dependency-name: "*"
+        update-types: [version-update:semver-major]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      actions:
+        patterns: ["*"]
