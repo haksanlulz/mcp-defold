@@ -60,13 +60,26 @@ The screen is text on purpose: compose whatever view carries your game's state (
 - Bridge input drives the in-game controller, not the GUI front-end; `defold_start` exists because injected input can't get past menus.
 - Run and test scripts are invoked through `pwsh`; there is no other runner.
 
-## Develop
+## Testing
 
 ```bash
 npm test          # vitest: tool handlers against a fake in-process bridge (no Defold needed)
 npm run smoke     # spawn the real server over stdio and exercise its error paths (offline)
 npm run typecheck
 ```
+
+Two tiers, both offline. `npm test` is the unit tier: 28 tests in 2 files, run in about half a second. `npm run smoke` spawns the real server as a child process over stdio and checks its error paths and the run-script marker contract; it needs no Defold install and no network.
+
+Counts, measured 2026-09-11:
+
+- app: 443 lines (`find . -maxdepth 1 -name '*.ts' -not -name '*.test.ts' -not -name 'smoke.ts' | xargs wc -l`; index.ts + server.ts). smoke.ts is another 259 lines of test harness.
+- tests: 428 lines (`find test -name '*.test.ts' | xargs wc -l`), 28 `it()` blocks.
+
+What they cover, by layer. The TCP bridge layer: timeout, unreachable port, non-JSON reply, and a 70 KB reply split across chunks. The registry loader: missing file, missing fields, non-string testScript, duplicate ports. The tool handlers: every tool driven through a real MCP client against a fake bridge that speaks the wire protocol, including input ordering, the failing-trigger message, the refuse-to-double-launch preflight, and the missing-root check. A source-level guard pins the import surface to the stdio transport and the runtime dependency list to one entry.
+
+Mutation probe (2026-09-11): swapping the spread order in `defold_start` so a caller's `options.cmd` overrides the fixed `start` command turned exactly one test red, `defold_start options cannot override the start command`, with the other 27 green. The source was restored after the run.
+
+Assertion policy: assert behavior and payloads, never that a function was called. A grep for `toHaveBeenCalled` finds zero sites in this suite; nothing was pruned.
 
 ## AI assistance
 
