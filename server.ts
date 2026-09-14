@@ -560,10 +560,18 @@ export function createServer(projects?: Record<string, Project>) {
         try {
           await bridgeCall({ cmd: "ping" }, p.port);
         } catch (e: any) {
-          throw new Error(
-            `defold_run: the run script printed the bridge marker, but no bridge answered on port ${p.port}. ` +
-            `Cause: ${e.message}\nScript output:\n${r.out.slice(-2000)}`,
-          );
+          // A ping that never left the queue is the same observation the
+          // preflight above reads as "a bridge is answering": the slot is only
+          // held by a call that connected. Reporting it as "no bridge answered"
+          // would make one observation mean opposite things thirty lines apart,
+          // and would fail a launch that worked -- whose retry the preflight
+          // then refuses with "already running".
+          if (!(e instanceof BridgeQueueTimeout)) {
+            throw new Error(
+              `defold_run: the run script printed the bridge marker, but no bridge answered on port ${p.port}. ` +
+              `Cause: ${e.message}\nScript output:\n${r.out.slice(-2000)}`,
+            );
+          }
         }
         return text(r.out.trim());
       }

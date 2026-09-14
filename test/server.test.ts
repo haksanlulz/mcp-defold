@@ -142,6 +142,42 @@ async function lateBridge(): Promise<{ port: number; close: () => Promise<void> 
   };
 }
 
+// A bridge that hangs up on its FIRST caller -- so defold_run's preflight sees
+// no live game -- and then accepts every later caller without ever replying.
+// Whoever dials second therefore holds this port's one call slot for as long
+// as the test needs, which is what puts a later call in the queue.
+async function slotHoldingBridge(): Promise<{
+  port: number;
+  firstDial: Promise<void>;
+  close: () => Promise<void>;
+}> {
+  const sockets: net.Socket[] = [];
+  let seen = 0;
+  let announce!: () => void;
+  const firstDial = new Promise<void>((r) => (announce = r));
+  const srv = net.createServer((sock) => {
+    sockets.push(sock);
+    sock.on("error", () => {});
+    if (++seen === 1) {
+      sock.destroy(); // no game yet
+      announce();
+    }
+    // Every caller after the first: accepted, never answered.
+  });
+  const port = await new Promise<number>((r) =>
+    srv.listen(0, "127.0.0.1", () => r((srv.address() as net.AddressInfo).port)),
+  );
+  return {
+    port,
+    firstDial,
+    close: () =>
+      new Promise<void>((r) => {
+        for (const s of sockets) s.destroy();
+        srv.close(() => r());
+      }),
+  };
+}
+
 afterAll(() => {
   // defold_run deliberately does not wait for the script to exit, so on
   // Windows the child can still hold its cwd when the suite ends. A temp dir
@@ -463,6 +499,31 @@ describe("defold_run confirms the bridge itself", () => {
       expect(textOf(res)).toContain("bridge LIVE on");
     } finally {
       await b.close();
+    }
+  }, PWSH_TIMEOUT);
+
+  it("reads a queued post-marker ping the way the preflight reads one", async () => {
+    // The preflight treats a queue timeout as proof that a bridge IS there:
+    // the slot is only held by a call that connected. The confirmation ping
+    // thirty lines later used to hand the same timeout to a blanket catch and
+    // report "no bridge answered", failing a launch that worked -- and the
+    // retry that answer invites is then refused as "already running".
+    const b = await slotHoldingBridge();
+    const held: Promise<unknown>[] = [];
+    try {
+      const client = await connectWith(scriptProject(
+        "Start-Sleep -Milliseconds 1200\n" + `Write-Output 'bridge LIVE on ${b.port}'\n`,
+        b.port,
+      ));
+      const call = client.callTool({ name: "defold_run", arguments: {} });
+      // Only once the preflight has dialed -- otherwise the holder would be in
+      // the slot first and the preflight itself would refuse the launch.
+      await b.firstDial;
+      held.push(bridgeCall({ cmd: "ping" }, b.port, 20_000).catch(() => {}));
+      expect(textOf(await call)).toContain("bridge LIVE on");
+    } finally {
+      await b.close();
+      await Promise.all(held);
     }
   }, PWSH_TIMEOUT);
 });
