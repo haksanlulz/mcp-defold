@@ -224,6 +224,13 @@ function text(s: string) {
   return { content: [{ type: "text" as const, text: s }] };
 }
 
+// Shared by defold_log and defold_test: a caller-supplied line count, or the
+// tool's own default when nothing usable was passed.
+function tailLines(v: unknown, fallback: number): number {
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? Math.trunc(n) : fallback;
+}
+
 // --- server ---------------------------------------------------------------------
 
 export function createServer(projects: Record<string, Project> = loadProjects()) {
@@ -338,8 +345,15 @@ export function createServer(projects: Record<string, Project> = loadProjects())
       },
       {
         name: "defold_test",
-        description: "Run the project's headless test suite (if a testScript is registered). Returns the tail of the output. Can take minutes.",
-        inputSchema: { type: "object", properties: { ...PROJECT_PROP } },
+        description:
+          "Run the project's headless test suite (if a testScript is registered). Returns the tail of the output when the suite passes; a non-zero exit is a tool ERROR carrying the exit code and the same tail. Widen `tail` when the failing assertion is further up than the default window. Can take minutes.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            ...PROJECT_PROP,
+            tail: { type: "number", description: "Lines from the end of the output (default 12)" },
+          },
+        },
       },
     ],
   }));
@@ -409,7 +423,7 @@ export function createServer(projects: Record<string, Project> = loadProjects())
         return text(JSON.stringify(r, null, 2));
       }
       case "defold_log": {
-        const tail = Number.isFinite(Number(args.tail)) && Number(args.tail) > 0 ? Math.trunc(Number(args.tail)) : 40;
+        const tail = tailLines(args.tail, 40);
         const r = await bridgeCall({ cmd: "log", tail }, p.port);
         return text(Array.isArray(r.lines) ? r.lines.join("\n") : JSON.stringify(r));
       }
@@ -422,8 +436,13 @@ export function createServer(projects: Record<string, Project> = loadProjects())
       }
       case "defold_test": {
         if (!p.testScript) throw new Error(`project has no testScript configured`);
+        const lines = tailLines(args.tail, 12);
         const r = await runPwsh([p.testScript], p.root, 360_000);
-        const tail = r.out.split(/\r?\n/).filter((l) => l.trim()).slice(-12).join("\n");
+        const tail = r.out.split(/\r?\n/).filter((l) => l.trim()).slice(-lines).join("\n");
+        // A failing suite is a failed tool call. Returning it as a normal result
+        // made "the suite ran" and "the suite passed" the same answer, and the
+        // one tool whose job is that distinction is the worst place to lose it.
+        if (r.code !== 0) throw new Error(`test suite failed: exit ${r.code}\n${tail}`);
         return text(`exit ${r.code}\n${tail}`);
       }
       default:

@@ -227,6 +227,62 @@ describe("mcp-defold server", () => {
   });
 });
 
+// These spawn a real pwsh, because the exit code is the whole subject and a
+// fake runner would be testing the fake. PowerShell 7 is already a hard
+// requirement of this server (every run and test script is invoked through it)
+// and the GitHub ubuntu runner image ships it, so the suite stays offline
+// without becoming machine-specific.
+describe("defold_test exit code", () => {
+  // A cold pwsh start can exceed vitest's 5s default on its own.
+  const PWSH_TIMEOUT = 30_000;
+  const dirs: string[] = [];
+
+  function scriptProject(body: string): Project {
+    const dir = mkdtempSync(join(tmpdir(), "mcpdefold-suite-"));
+    dirs.push(dir);
+    writeFileSync(join(dir, "t.ps1"), body);
+    return { root: dir, port: bridgePort, runScript: "run.ps1", testScript: "t.ps1" };
+  }
+
+  afterAll(() => {
+    for (const d of dirs) rmSync(d, { recursive: true, force: true });
+  });
+
+  it("returns the tail as a normal result when the suite passes", async () => {
+    const client = await connectWith(scriptProject("Write-Output 'Total: 20 run, 0 failed'\nexit 0\n"));
+    const res = await client.callTool({ name: "defold_test", arguments: {} });
+    expect(textOf(res)).toContain("exit 0");
+    expect(textOf(res)).toContain("20 run, 0 failed");
+  }, PWSH_TIMEOUT);
+
+  it("reports a failing suite as a failed tool call naming the exit code", async () => {
+    const client = await connectWith(scriptProject("Write-Output 'Total: 20 run, 1 failed'\nexit 1\n"));
+    await expect(
+      client.callTool({ name: "defold_test", arguments: {} }),
+    ).rejects.toThrow(/test suite failed: exit 1/);
+  }, PWSH_TIMEOUT);
+
+  it("tail widens the window that would otherwise drop the failure line", async () => {
+    // The assertion fails first, then 20 more lines scroll past it: the
+    // 12-line default window cannot show the line that names the failure.
+    const client = await connectWith(scriptProject(
+      "Write-Output 'BANNER-FAILURE hp was 9 expected 10'\n" +
+      "1..20 | ForEach-Object { Write-Output \"noise $_\" }\n" +
+      "exit 1\n",
+    ));
+    const narrow = await client
+      .callTool({ name: "defold_test", arguments: {} })
+      .catch((e: Error) => e);
+    expect(String(narrow)).toMatch(/exit 1/);
+    expect(String(narrow)).not.toContain("BANNER-FAILURE");
+
+    const wide = await client
+      .callTool({ name: "defold_test", arguments: { tail: 40 } })
+      .catch((e: Error) => e);
+    expect(String(wide)).toContain("BANNER-FAILURE");
+  }, PWSH_TIMEOUT);
+});
+
 describe("translateSpawnError", () => {
   it("translates pwsh ENOENT into a PATH error", () => {
     const e: NodeJS.ErrnoException = Object.assign(new Error("spawn pwsh ENOENT"), { code: "ENOENT" });
