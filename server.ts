@@ -313,10 +313,20 @@ function text(s: string) {
 }
 
 // Shared by defold_log and defold_test: a caller-supplied line count, or the
-// tool's own default when nothing usable was passed.
+// tool's own default when nothing was passed.
+//
+// Coercing was the same defect as coercing a trigger or a cmd, one argument
+// over: Number(true) is 1, Number([5]) is 5 and Number(" 7 ") is 7, so a
+// wrong-shaped argument silently chose a window instead of erroring -- and a
+// one-line window on defold_test is the harm its `tail` exists to prevent,
+// the failing assertion scrolled out of the tail. A number that is merely
+// useless (0, -1, NaN) still falls back; a wrong TYPE does not.
 function tailLines(v: unknown, fallback: number): number {
-  const n = Number(v);
-  return Number.isFinite(n) && n > 0 ? Math.trunc(n) : fallback;
+  if (typeof v !== "number") {
+    if (v === undefined || v === null) return fallback;
+    throw new Error(`tail must be a number, got ${Array.isArray(v) ? "an array" : typeof v}`);
+  }
+  return Number.isFinite(v) && v > 0 ? Math.trunc(v) : fallback;
 }
 
 // --- argument validation -------------------------------------------------------

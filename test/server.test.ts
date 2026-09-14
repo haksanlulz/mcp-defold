@@ -568,6 +568,27 @@ describe("documented behaviour with no other coverage", () => {
     expect(received.slice(before)).toEqual([{ cmd: "log", tail: 40 }]);
   });
 
+  it("rejects a wrong-typed tail instead of coercing it to a window", async () => {
+    // Number(true) is 1 and Number([5]) is 5, so coercion turned a client
+    // mistake into a silently different window. On defold_test that is the
+    // DEF-1 harm re-entered through the argument DEF-1 added to prevent it:
+    // a one-line tail drops the assertion that failed.
+    const client = await connect();
+    const before = received.length;
+    const wrong: [unknown, string][] = [
+      [true, "boolean"],
+      [[5], "an array"],
+      [" 7 ", "string"],
+      ["1e1", "string"],
+    ];
+    for (const [tail, got] of wrong) {
+      await expect(
+        client.callTool({ name: "defold_log", arguments: { tail } as any }),
+      ).rejects.toThrow(`tail must be a number, got ${got}`);
+    }
+    expect(received.slice(before)).toEqual([]); // and nothing reached the game
+  });
+
   it("defold_run passes -SkipBuild to the run script when asked", async () => {
     // The flag only exists on the far side of pwsh, so read it back from the
     // script's own stdout rather than from anything this process can see.
