@@ -357,6 +357,18 @@ function commandArg(v: unknown): string {
   return v;
 }
 
+// A flag that changes WHAT gets launched, so reading it for truthiness is not
+// a cosmetic laxity: the string "false" is truthy, and a skip_build read that
+// way relaunches the last build, leaving an agent to drive a game that does
+// not contain the change it just made -- with nothing in the output saying so.
+function boolArg(v: unknown, label: string): boolean {
+  if (v === undefined || v === null) return false;
+  if (typeof v !== "boolean") {
+    throw new Error(`${label} must be true or false, got ${Array.isArray(v) ? "an array" : typeof v}`);
+  }
+  return v;
+}
+
 // Trigger ids go to the game verbatim. Coercing them meant a client mistake
 // arrived as the trigger '[object Object]' and came back as a bridge error.
 function triggerList(v: unknown): string[] {
@@ -533,6 +545,8 @@ export function createServer(projects?: Record<string, Project>) {
     const p = resolveProject(args);
     switch (name) {
       case "defold_run": {
+        // Before the preflight: a call that cannot run should not dial a port.
+        const skipBuild = boolArg(args.skip_build, "skip_build");
         // Preflight: if a bridged game already answers on this port, refuse.
         // Launching a second instance would leave us silently driving the
         // stale one (the new engine can't bind the port the old one holds).
@@ -556,7 +570,7 @@ export function createServer(projects?: Record<string, Project>) {
           );
         }
         const a = [p.runScript];
-        if (args.skip_build) a.push("-SkipBuild");
+        if (skipBuild) a.push("-SkipBuild");
         const r = await runPwshUntilMarker(a, p.root, {
           success: /bridge LIVE on /,
           failure: /^FAIL:/m,

@@ -589,6 +589,21 @@ describe("documented behaviour with no other coverage", () => {
     expect(received.slice(before)).toEqual([]); // and nothing reached the game
   });
 
+  it("rejects a wrong-typed skip_build instead of reading it for truthiness", async () => {
+    // The string "false" is truthy, so this flag could silently relaunch the
+    // LAST build: the agent then drives a game that does not contain the
+    // change it just made, and no output says so. Checked before the preflight
+    // ping, so a call that cannot run never dials the port.
+    const client = await connect();
+    const before = received.length;
+    for (const [skip_build, got] of [["false", "string"], [0, "number"], [[true], "an array"]] as [unknown, string][]) {
+      await expect(
+        client.callTool({ name: "defold_run", arguments: { skip_build } as any }),
+      ).rejects.toThrow(`skip_build must be true or false, got ${got}`);
+    }
+    expect(received.slice(before)).toEqual([]);
+  });
+
   it("defold_run passes -SkipBuild to the run script when asked", async () => {
     // The flag only exists on the far side of pwsh, so read it back from the
     // script's own stdout rather than from anything this process can see.
