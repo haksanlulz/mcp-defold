@@ -202,6 +202,45 @@ try {
   session.kill();
 }
 
+/* ------------------------ phase 1b: a fresh clone with no registry at all */
+
+// The likeliest first-run failure for anyone following the README's Install
+// section. The registry error used to be thrown at import time, so the process
+// died before `initialize` and an MCP client showed only "server disconnected"
+// -- the message naming the fix went to a log nobody opens. The server must
+// come up, list its tools, and put that message on the first tool call.
+const missingRegistry = join(fixtureDir, "no-such-registry.json");
+check("no-registry: the fixture path really is absent", !existsSync(missingRegistry), missingRegistry);
+
+const bare = new StdioSession(SERVER_PATH, { MCP_DEFOLD_PROJECTS: missingRegistry });
+try {
+  const init = await bare.rpc("initialize", {
+    protocolVersion: "2024-11-05",
+    capabilities: {},
+    clientInfo: { name: "mcp-defold-smoke", version: "1.0.0" },
+  });
+  check("no-registry: initialize still succeeds", init?.serverInfo?.name === "mcp-defold",
+    `serverInfo.name=${init?.serverInfo?.name}`);
+  bare.notify("notifications/initialized");
+
+  const bareList = await bare.rpc("tools/list");
+  const bareNames: string[] = (bareList?.tools ?? []).map((t: any) => t.name);
+  check(`no-registry: tools/list still returns the ${EXPECTED_TOOLS.length} tools`,
+    bareNames.length === EXPECTED_TOOLS.length && EXPECTED_TOOLS.every((n) => bareNames.includes(n)),
+    bareNames.join(", "));
+
+  const hint = await callExpectError(bare, "defold_screen", {}, ["projects.example.json"]);
+  check("no-registry: a tool call carries the copy-the-example fix", hint.ok, hint.detail);
+
+  // Held, not consumed: a later call must say the same thing as the first.
+  const again = await callExpectError(bare, "defold_state", {}, ["projects.example.json"]);
+  check("no-registry: every later tool call repeats it", again.ok, again.detail);
+} catch (e) {
+  check(`no-registry harness error: ${(e as Error).message}`, false, bare.stderr.slice(-400));
+} finally {
+  bare.kill();
+}
+
 /* ------------------------------- phase 2: your registry + marker contract */
 
 const realRegistry = process.env.MCP_DEFOLD_PROJECTS ?? join(HERE, "projects.json");
