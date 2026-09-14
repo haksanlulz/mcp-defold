@@ -390,7 +390,13 @@ export function createServer(projects?: Record<string, Project>) {
     // and a caller who fixes it restarts the server anyway.
     if (registryError) throw registryError;
     const name = (args.project as string) || DEFAULT_PROJECT;
-    const p = registry[name];
+    // Object.prototype keys ('toString', 'constructor', 'hasOwnProperty',
+    // '__proto__') are truthy on any plain object, and a registry is one --
+    // JSON.parse'd, or a caller's literal. A bare index handed back an
+    // inherited function, the guard below never fired, and the caller got
+    // Node's 'The "options" or "port" or "path" argument must be specified'
+    // out of net.createConnection instead of the message it is here to give.
+    const p = Object.prototype.hasOwnProperty.call(registry, name) ? registry[name] : undefined;
     if (!p) {
       throw new Error(
         `unknown project '${name}'. Registered: ${Object.keys(registry).join(", ")}`,

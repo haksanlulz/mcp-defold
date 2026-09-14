@@ -342,6 +342,21 @@ describe("mcp-defold server", () => {
     ).rejects.toThrow(/unknown project/);
   });
 
+  it("rejects an Object.prototype key as an unknown project", async () => {
+    // A registry is a plain object -- JSON.parse'd, or a caller's literal --
+    // so a bare index on one of these names hands back an inherited function
+    // or Object.prototype itself. Truthy, so the unknown-project guard never
+    // fired and a Project-shaped nothing reached net.createConnection, whose
+    // 'The "options" or "port" or "path" argument must be specified' names
+    // neither the project nor the fix.
+    const client = await connect();
+    for (const project of ["toString", "constructor", "hasOwnProperty", "__proto__"]) {
+      await expect(
+        client.callTool({ name: "defold_screen", arguments: { project } }),
+      ).rejects.toThrow(new RegExp(`unknown project '${project}'\\. Registered: testgame`));
+    }
+  });
+
   it("defold_test errors when the project has no testScript", async () => {
     const client = await connect();
     await expect(
