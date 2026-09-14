@@ -507,8 +507,15 @@ export function createServer(projects?: Record<string, Project>) {
         try {
           await bridgeCall({ cmd: "ping" }, p.port, 2000);
           alreadyLive = true;
-        } catch {
-          // nothing answered (connection refused / timeout): safe to launch
+        } catch (e) {
+          // A ping that never left the queue is not evidence of an empty port.
+          // It means another bridge call is holding the slot, and a call only
+          // holds the slot by having connected -- something is answering there.
+          // Reading that as "safe to launch" put a second engine on top of a
+          // running game, which is the one thing this preflight exists to stop.
+          // Only a completed dial -- refused, or accepted and then silent --
+          // says the port is empty.
+          if (e instanceof BridgeQueueTimeout) alreadyLive = true;
         }
         if (alreadyLive) {
           throw new Error(

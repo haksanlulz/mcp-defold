@@ -304,6 +304,35 @@ describe("mcp-defold server", () => {
     ).rejects.toThrow(/already running on port .*defold_stop/);
   });
 
+  it("defold_run refuses when the preflight ping times out waiting for the slot", async () => {
+    // A concurrent bridge call holds the port's slot, so the preflight ping
+    // spends its whole budget queued and never dials. Reading that as "nothing
+    // answered" launched a second engine over a running game: a call can only
+    // hold the slot by having connected, so a queue timeout is evidence FOR a
+    // live bridge. With the bug the run script is spawned and the error is
+    // "run failed" instead.
+    const sockets: net.Socket[] = [];
+    const srv = net.createServer((sock) => {
+      sockets.push(sock);
+      sock.on("error", () => {});
+    });
+    const port = await new Promise<number>((r) =>
+      srv.listen(0, "127.0.0.1", () => r((srv.address() as net.AddressInfo).port)),
+    );
+    // Occupies the slot past the preflight's own 2000ms budget.
+    const holder = bridgeCall({ cmd: "screen" }, port, 2500).catch(() => {});
+    try {
+      const client = await connectWith({ root: ".", port, runScript: "r.ps1" });
+      await expect(
+        client.callTool({ name: "defold_run", arguments: {} }),
+      ).rejects.toThrow(/already running on port .*defold_stop/);
+    } finally {
+      await holder;
+      for (const s of sockets) s.destroy();
+      await new Promise<void>((r) => srv.close(() => r()));
+    }
+  }, PWSH_TIMEOUT);
+
   it("defold_run reports a clear error when the project root is missing", async () => {
     // Point at a dead port so the preflight passes, then the pre-spawn disk
     // check must fire instead of a raw spawn ENOENT.
