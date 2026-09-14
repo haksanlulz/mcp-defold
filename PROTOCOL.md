@@ -9,12 +9,16 @@ working skeleton.
 - Game listens on `127.0.0.1:<port>` (the port you register in `projects.json`).
 - Client sends one JSON line: `{"cmd": "...", ...args}\n`
 - Game replies with one JSON line and can close the connection after.
+- One client at a time is enough. The server serializes its calls per port, so
+  it never has two connections open to one bridge; `example/bridge.lua` accepts
+  at most one client per `update()` tick behind `listen(1)`. A bridge that
+  accepts concurrently is fine, but nothing requires it.
 
 ## Commands the bridge must answer
 
 | cmd | request extras | response |
 |---|---|---|
-| `ping` | — | `{"ok": true}` (liveness check: used by run scripts and by `defold_run`'s already-running preflight; reachable via `defold_bridge`) |
+| `ping` | — | `{"ok": true}` (liveness check, answered every time it is asked: by run scripts, by `defold_run`'s already-running preflight, and by `defold_run` again after the run script's marker to confirm a bridge really answers; reachable via `defold_bridge`) |
 | `screen` | — | `{"frame": "<composed text view>"}` |
 | `state` | — | any JSON object (position, health, flags: your call) |
 | `input` | `"trigger": "<action id>"` | `{"ok": true}`; injects the action as pressed+released |
