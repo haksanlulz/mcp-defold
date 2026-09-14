@@ -138,7 +138,7 @@ npm run smoke     # spawn the real server over stdio and exercise its error path
 npm run typecheck
 ```
 
-Two tiers, both offline. `npm test` is the unit tier: 53 tests in 2 files, run in about four seconds. Eight of them spawn a real `pwsh` to exercise the exit-code, marker and `skip_build` paths, so PowerShell 7 is a requirement of the unit tier as well as of the run scripts. `npm run smoke` spawns the real server as a child process over stdio and checks its error paths and the run-script marker contract; it needs no Defold install and no network.
+Two tiers, both offline. `npm test` is the unit tier: 53 tests in 2 files, run in about four seconds. Nine of them spawn a real `pwsh` to exercise the exit-code, marker and `skip_build` paths, so PowerShell 7 is a requirement of the unit tier as well as of the run scripts. `npm run smoke` spawns the real server as a child process over stdio and checks its error paths and the run-script marker contract; it needs no Defold install and no network.
 
 Counts, measured 2026-09-14:
 
