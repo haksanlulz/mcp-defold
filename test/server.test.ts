@@ -349,7 +349,10 @@ describe("mcp-defold server", () => {
       for (const s of sockets) s.destroy();
       await new Promise<void>((r) => srv.close(() => r()));
     }
-  }, PWSH_TIMEOUT);
+    // Not PWSH_TIMEOUT: nothing here spawns pwsh unless the guard is gone, and
+    // that constant is what the pwsh-backed test count is measured by. This
+    // only needs room for the 2.5s the holder occupies the slot.
+  }, 15_000);
 
   it("defold_run reports a clear error when the project root is missing", async () => {
     // Point at a dead port so the preflight passes, then the pre-spawn disk
