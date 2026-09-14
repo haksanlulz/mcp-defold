@@ -228,6 +228,18 @@ function runPwsh(args: string[], cwd: string, timeoutMs: number): Promise<{ code
 // running (a marker decided it) and the exit code when nothing matched.
 type MarkerRun = { ok: boolean; out: string; code: number | null };
 
+export type MarkerVerdict = "ok" | "fail" | "none";
+
+// The whole decision runPwshUntilMarker makes, as a pure function of the
+// output so far. Success outranks failure: a script that printed FAIL for one
+// step and then got the bridge up has launched the game. "none" means neither
+// marker has appeared yet -- and at exit, that the script died saying neither.
+export function markerVerdict(out: string, success: RegExp, failure: RegExp): MarkerVerdict {
+  if (success.test(out)) return "ok";
+  if (failure.test(out)) return "fail";
+  return "none";
+}
+
 // Run a script that launches a LONG-LIVED detached process and reports its
 // result on stdout, then exits. Can't wait for "close": the windowed engine
 // the script backgrounds inherits the stdout pipe handle on Windows, so the
@@ -257,18 +269,19 @@ function runPwshUntilMarker(
       killTree(child); // timeout means a wedged build, not a launched game
       finish(new Error(`script timed out after ${opts.timeoutMs}ms; partial output:\n${out.slice(-2000)}`));
     }, opts.timeoutMs);
+    const verdict = () => markerVerdict(out, opts.success, opts.failure);
     const scan = (d: Buffer) => {
       out += d.toString();
       // Still running, so there is no exit code to report yet.
-      if (opts.success.test(out)) finish({ ok: true, out, code: null });
-      else if (opts.failure.test(out)) finish({ ok: false, out, code: null });
+      const v = verdict();
+      if (v !== "none") finish({ ok: v === "ok", out, code: null });
     };
     child.stdout.on("data", scan);
     child.stderr.on("data", scan);
     // Exited without either marker. bob and java exit codes say what went
     // wrong on a build failure, so carry the code out rather than dropping it.
     child.on("exit", (code) =>
-      setTimeout(() => finish({ ok: opts.success.test(out), out, code: code ?? -1 }), 50));
+      setTimeout(() => finish({ ok: verdict() === "ok", out, code: code ?? -1 }), 50));
     child.on("error", (e) => finish(translateSpawnError(e)));
   });
 }

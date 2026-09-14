@@ -5,7 +5,14 @@ import net from "node:net";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { bridgeCall, createServer, loadProjects, translateSpawnError, type Project } from "../server.js";
+import {
+  bridgeCall,
+  createServer,
+  loadProjects,
+  markerVerdict,
+  translateSpawnError,
+  type Project,
+} from "../server.js";
 
 // A fake in-process bridge: answers the wire protocol so tool handlers can be
 // tested end to end without Defold, a build, or a real game.
@@ -375,6 +382,20 @@ describe("defold_run confirms the bridge itself", () => {
     ).rejects.toThrow(new RegExp(`defold_run:.*no bridge answered on port ${port}`, "s"));
   }, PWSH_TIMEOUT);
 
+  it("reports a run script that prints the failure marker", async () => {
+    // The scan decides here, while the script is still running, so there is no
+    // exit code to report -- unlike the no-marker case below.
+    const port = await deadPort();
+    const dir = mkdtempSync(join(tmpdir(), "mcpdefold-run-"));
+    dirs.push(dir);
+    writeFileSync(join(dir, "r.ps1"), "Write-Output 'FAIL: bob could not resolve dependencies'\nexit 1\n");
+    const client = await connectWith({ root: dir, port, runScript: "r.ps1" });
+    const err = await client.callTool({ name: "defold_run", arguments: {} }).catch((e: Error) => e);
+    expect(String(err)).toMatch(/run failed:/);
+    expect(String(err)).toContain("bob could not resolve dependencies");
+    expect(String(err)).not.toMatch(/exit \d/);
+  }, PWSH_TIMEOUT);
+
   it("carries the script's exit code when it dies without a marker", async () => {
     // bob and java say what went wrong in the exit code; the marker scan used
     // to drop it, leaving "run failed:" and 2000 characters of output.
@@ -398,6 +419,38 @@ describe("defold_run confirms the bridge itself", () => {
       await b.close();
     }
   }, PWSH_TIMEOUT);
+});
+
+// The three verdicts decide whether defold_run reports a launched game or a
+// failed one. Until this was a function, the only thing pinning them was the
+// smoke's grep of server.ts for two string literals -- which stays green even
+// if the scan stops consulting either regex.
+describe("markerVerdict", () => {
+  const SUCCESS = /bridge LIVE on /;
+  const FAILURE = /^FAIL:/m;
+
+  it("reads the success marker", () => {
+    expect(markerVerdict("building...\nbridge LIVE on 17890\n", SUCCESS, FAILURE)).toBe("ok");
+  });
+
+  it("reads the failure marker", () => {
+    expect(markerVerdict("building...\nFAIL: bob could not resolve\n", SUCCESS, FAILURE)).toBe("fail");
+  });
+
+  it("reads output with neither marker as undecided", () => {
+    expect(markerVerdict("building...\nstill building\n", SUCCESS, FAILURE)).toBe("none");
+    expect(markerVerdict("", SUCCESS, FAILURE)).toBe("none");
+  });
+
+  it("lets success outrank a failure printed earlier in the run", () => {
+    // A step failed and the script recovered: the game is up, which is the
+    // question defold_run is asking.
+    expect(markerVerdict("FAIL: retrying\nbridge LIVE on 17890\n", SUCCESS, FAILURE)).toBe("ok");
+  });
+
+  it("requires the failure marker at the start of a line", () => {
+    expect(markerVerdict("note: do not FAIL: here\n", SUCCESS, FAILURE)).toBe("none");
+  });
 });
 
 describe("concurrent bridge calls", () => {
