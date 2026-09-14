@@ -86,6 +86,11 @@ type BridgeReq = Record<string, unknown> & { cmd: string };
 // alongside a defold_input sequence returning a frame from the middle of it.
 const inFlight = new Map<number, Promise<void>>();
 
+// A call that spent its whole budget waiting for the slot and never dialed.
+// Its own type, not merely its own wording: a caller that has to tell "the
+// port is empty" from "the port is busy" should not be matching message text.
+export class BridgeQueueTimeout extends Error {}
+
 export function bridgeCall(req: BridgeReq, port: number, timeoutMs = 8000): Promise<any> {
   const queuedAt = Date.now();
   const prev = inFlight.get(port) ?? Promise.resolve();
@@ -107,23 +112,35 @@ export function bridgeCall(req: BridgeReq, port: number, timeoutMs = 8000): Prom
     let expired = false;
     const deadline = setTimeout(() => {
       expired = true;
-      reject(new Error(
+      reject(new BridgeQueueTimeout(
         `bridge timeout after ${timeoutMs}ms on ${BRIDGE_HOST}:${port} (still queued behind an earlier call)`,
       ));
     }, timeoutMs);
     const run = () => {
       if (expired) return release(); // caller is gone; never dial on its behalf
+      // The wait is over, so this deadline has done its job -- clear it before
+      // dialing. It and the socket timer expire at the same instant and this
+      // one was armed first, so leaving it armed hands "still queued behind an
+      // earlier call" to a call that never queued: the ordinary case, and the
+      // wrong cause. The socket gets what is LEFT of the budget but reports
+      // the budget the caller asked for, which is the only number a caller can
+      // recognise.
+      clearTimeout(deadline);
       const left = Math.max(timeoutMs - (Date.now() - queuedAt), 1);
-      bridgeSocketCall(req, port, left).then(
-        (v) => { clearTimeout(deadline); release(); resolve(v); },
-        (e) => { clearTimeout(deadline); release(); reject(e); },
+      bridgeSocketCall(req, port, left, timeoutMs).then(
+        (v) => { release(); resolve(v); },
+        (e) => { release(); reject(e); },
       );
     };
     void prev.then(run, run);
   });
 }
 
-function bridgeSocketCall(req: BridgeReq, port: number, timeoutMs: number): Promise<any> {
+// `timeoutMs` is what is left of the caller's budget; `budgetMs` is what the
+// caller asked for. They differ once a call has waited in the queue, and the
+// message quotes the budget: a caller who set 1000ms cannot match a timeout
+// reported as 890ms against anything it knows.
+function bridgeSocketCall(req: BridgeReq, port: number, timeoutMs: number, budgetMs = timeoutMs): Promise<any> {
   return new Promise((resolve, reject) => {
     const sock = net.createConnection({ host: BRIDGE_HOST, port });
     const chunks: Buffer[] = [];
@@ -136,7 +153,7 @@ function bridgeSocketCall(req: BridgeReq, port: number, timeoutMs: number): Prom
       fn();
     };
     const timer = setTimeout(() => {
-      finish(() => reject(new Error(`bridge timeout after ${timeoutMs}ms on ${BRIDGE_HOST}:${port} (is the game running? use defold_run)`)));
+      finish(() => reject(new Error(`bridge timeout after ${budgetMs}ms on ${BRIDGE_HOST}:${port} (is the game running? use defold_run)`)));
     }, timeoutMs);
     sock.on("connect", () => sock.write(JSON.stringify(req) + "\n"));
     sock.on("data", (d) => {

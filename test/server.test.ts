@@ -666,6 +666,42 @@ describe("concurrent bridge calls", () => {
       await new Promise<void>((r) => srv.close(() => r()));
     }
   });
+
+  it("a call that waited its turn reports its own budget and blames the game", async () => {
+    // First caller is answered after a beat; the second therefore waits, then
+    // dials with less than its budget left. Both halves of its message have
+    // been wrong: the figure (the remainder, which matches no timeout any
+    // caller set) and the cause (a queue it has by then left).
+    const sockets: net.Socket[] = [];
+    let seen = 0;
+    const srv = net.createServer((sock) => {
+      sockets.push(sock);
+      sock.on("error", () => {});
+      const nth = ++seen;
+      sock.on("data", () => {
+        if (nth > 1) return; // later callers get silence: they time out dialing
+        setTimeout(() => {
+          sock.write(JSON.stringify({ ok: true }) + "\n");
+          sock.end();
+        }, 120);
+      });
+    });
+    const port = await new Promise<number>((r) =>
+      srv.listen(0, "127.0.0.1", () => r((srv.address() as net.AddressInfo).port)),
+    );
+    try {
+      const first = bridgeCall({ cmd: "ping" }, port, 2000);
+      const second = bridgeCall({ cmd: "ping" }, port, 400).catch((e: Error) => e);
+      expect(await first).toEqual({ ok: true });
+      const e = await second;
+      expect(String(e)).toMatch(/bridge timeout after 400ms/); // not the ~280ms remainder
+      expect(String(e)).toMatch(/is the game running\? use defold_run/);
+      expect(String(e)).not.toMatch(/still queued/);
+    } finally {
+      for (const s of sockets) s.destroy();
+      await new Promise<void>((r) => srv.close(() => r()));
+    }
+  });
 });
 
 describe("translateSpawnError", () => {
@@ -747,7 +783,13 @@ describe("bridgeCall failure paths", () => {
   it("bridgeCall rejects with a timeout when the bridge never replies", async () => {
     const s = await silentServer();
     try {
-      await expect(bridgeCall({ cmd: "ping" }, s.port, 100)).rejects.toThrow(/bridge timeout after 100ms/);
+      // The cause matters as much as the number. Nothing was queued ahead of
+      // this call, so it must be told to check the game, not to blame a queue
+      // it never sat in -- the ordinary timeout, and the actionable message.
+      const e = await bridgeCall({ cmd: "ping" }, s.port, 100).catch((err: Error) => err);
+      expect(String(e)).toMatch(/bridge timeout after 100ms/);
+      expect(String(e)).toMatch(/is the game running\? use defold_run/);
+      expect(String(e)).not.toMatch(/still queued/);
     } finally {
       await s.close();
     }
