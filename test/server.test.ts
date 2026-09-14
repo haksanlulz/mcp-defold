@@ -142,6 +142,36 @@ describe("mcp-defold server", () => {
     ).rejects.toThrow(/non-empty/);
   });
 
+  it("defold_input rejects a non-string trigger by index, sending nothing", async () => {
+    // Coerced, this pressed the trigger '7' and the game's "no such trigger"
+    // came back blaming the bridge for a mistake made by the client.
+    const client = await connect();
+    const before = received.length;
+    await expect(
+      client.callTool({ name: "defold_input", arguments: { triggers: ["key_w", 7] } }),
+    ).rejects.toThrow(/triggers\[1\] must be a non-empty string, got number/);
+    expect(received.length).toBe(before);
+  });
+
+  it("defold_start rejects an array of options", async () => {
+    // typeof [] is "object", so this used to spread into {"0": 1, "1": 2}.
+    const client = await connect();
+    const before = received.length;
+    await expect(
+      client.callTool({ name: "defold_start", arguments: { options: [1, 2] } }),
+    ).rejects.toThrow(/options must be an object, got an array/);
+    expect(received.length).toBe(before);
+  });
+
+  it("defold_bridge rejects an array of args", async () => {
+    const client = await connect();
+    const before = received.length;
+    await expect(
+      client.callTool({ name: "defold_bridge", arguments: { cmd: "advance", args: [1, 2] } }),
+    ).rejects.toThrow(/args must be an object, got an array/);
+    expect(received.length).toBe(before);
+  });
+
   it("defold_start merges options into the bridge start request", async () => {
     const client = await connect();
     const res = await client.callTool({
@@ -343,6 +373,19 @@ describe("defold_run confirms the bridge itself", () => {
     await expect(
       client.callTool({ name: "defold_run", arguments: {} }),
     ).rejects.toThrow(new RegExp(`defold_run:.*no bridge answered on port ${port}`, "s"));
+  }, PWSH_TIMEOUT);
+
+  it("carries the script's exit code when it dies without a marker", async () => {
+    // bob and java say what went wrong in the exit code; the marker scan used
+    // to drop it, leaving "run failed:" and 2000 characters of output.
+    const port = await deadPort();
+    const dir = mkdtempSync(join(tmpdir(), "mcpdefold-run-"));
+    dirs.push(dir);
+    writeFileSync(join(dir, "r.ps1"), "Write-Output 'bob.jar: cannot find main'\nexit 3\n");
+    const client = await connectWith({ root: dir, port, runScript: "r.ps1" });
+    await expect(
+      client.callTool({ name: "defold_run", arguments: {} }),
+    ).rejects.toThrow(/run failed \(exit 3\)/);
   }, PWSH_TIMEOUT);
 
   it("succeeds when the bridge answers after the marker", async () => {

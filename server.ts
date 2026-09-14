@@ -179,6 +179,10 @@ function runPwsh(args: string[], cwd: string, timeoutMs: number): Promise<{ code
   });
 }
 
+// The outcome of a marker scan. `code` is null while the process is still
+// running (a marker decided it) and the exit code when nothing matched.
+type MarkerRun = { ok: boolean; out: string; code: number | null };
+
 // Run a script that launches a LONG-LIVED detached process and reports its
 // result on stdout, then exits. Can't wait for "close": the windowed engine
 // the script backgrounds inherits the stdout pipe handle on Windows, so the
@@ -188,13 +192,13 @@ function runPwshUntilMarker(
   args: string[],
   cwd: string,
   opts: { success: RegExp; failure: RegExp; timeoutMs: number },
-): Promise<{ ok: boolean; out: string }> {
+): Promise<MarkerRun> {
   return new Promise((resolve, reject) => {
     ensureRoot(cwd);
     const child = spawn("pwsh", ["-NoProfile", ...args], { cwd });
     let out = "";
     let settled = false;
-    const finish = (result: { ok: boolean; out: string } | Error) => {
+    const finish = (result: MarkerRun | Error) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
@@ -210,12 +214,16 @@ function runPwshUntilMarker(
     }, opts.timeoutMs);
     const scan = (d: Buffer) => {
       out += d.toString();
-      if (opts.success.test(out)) finish({ ok: true, out });
-      else if (opts.failure.test(out)) finish({ ok: false, out });
+      // Still running, so there is no exit code to report yet.
+      if (opts.success.test(out)) finish({ ok: true, out, code: null });
+      else if (opts.failure.test(out)) finish({ ok: false, out, code: null });
     };
     child.stdout.on("data", scan);
     child.stderr.on("data", scan);
-    child.on("exit", () => setTimeout(() => finish({ ok: opts.success.test(out), out }), 50));
+    // Exited without either marker. bob and java exit codes say what went
+    // wrong on a build failure, so carry the code out rather than dropping it.
+    child.on("exit", (code) =>
+      setTimeout(() => finish({ ok: opts.success.test(out), out, code: code ?? -1 }), 50));
     child.on("error", (e) => finish(translateSpawnError(e)));
   });
 }
@@ -229,6 +237,36 @@ function text(s: string) {
 function tailLines(v: unknown, fallback: number): number {
   const n = Number(v);
   return Number.isFinite(n) && n > 0 ? Math.trunc(n) : fallback;
+}
+
+// --- argument validation -------------------------------------------------------
+// The low-level Server hands a handler whatever the client sent; it does not
+// check it against the declared inputSchema. These are that check. None of it
+// is reachable from a well-behaved client, which is exactly why the failure
+// would otherwise be blamed on the game.
+
+// A field that is merged into a bridge request. `typeof [] === "object"`, and
+// spreading an array turns it into {"0": ...}, so exclude arrays explicitly.
+function objectArg(v: unknown, label: string): Record<string, unknown> {
+  if (v === undefined || v === null) return {};
+  if (typeof v !== "object" || Array.isArray(v)) {
+    throw new Error(`${label} must be an object, got ${Array.isArray(v) ? "an array" : typeof v}`);
+  }
+  return v as Record<string, unknown>;
+}
+
+// Trigger ids go to the game verbatim. Coercing them meant a client mistake
+// arrived as the trigger '[object Object]' and came back as a bridge error.
+function triggerList(v: unknown): string[] {
+  if (!Array.isArray(v) || v.length === 0) {
+    throw new Error("triggers must be a non-empty array of trigger id strings");
+  }
+  v.forEach((t, i) => {
+    if (typeof t !== "string" || !t) {
+      throw new Error(`triggers[${i}] must be a non-empty string, got ${typeof t}`);
+    }
+  });
+  return v as string[];
 }
 
 // --- server ---------------------------------------------------------------------
@@ -385,7 +423,11 @@ export function createServer(projects: Record<string, Project> = loadProjects())
           failure: /^FAIL:/m,
           timeoutMs: 180_000,
         });
-        if (!r.ok) throw new Error(`run failed:\n${r.out.slice(-2000)}`);
+        if (!r.ok) {
+          throw new Error(
+            `run failed${r.code === null ? "" : ` (exit ${r.code})`}:\n${r.out.slice(-2000)}`,
+          );
+        }
         // The marker is the run script's CLAIM that the bridge is up. Confirm
         // it here, so "returns when the bridge answers" is true of this server
         // rather than true of a script this server does not control. Without
@@ -407,23 +449,22 @@ export function createServer(projects: Record<string, Project> = loadProjects())
         return text(JSON.stringify(r));
       }
       case "defold_start": {
-        const extra = (args.options && typeof args.options === "object") ? (args.options as Record<string, unknown>) : {};
+        const extra = objectArg(args.options, "options");
         const r = await bridgeCall({ ...extra, cmd: "start" }, p.port);
         return text(JSON.stringify(r));
       }
       case "defold_input": {
-        const triggers = Array.isArray(args.triggers) ? args.triggers : [];
-        if (triggers.length === 0) throw new Error("triggers must be a non-empty array");
+        const triggers = triggerList(args.triggers);
         const applied: string[] = [];
         for (const t of triggers) {
-          const r = await bridgeCall({ cmd: "input", trigger: String(t) }, p.port);
+          const r = await bridgeCall({ cmd: "input", trigger: t }, p.port);
           if (r?.error || r?.ok === false) {
             throw new Error(
               `input '${t}' failed (${r.error ?? "ok=false"})` +
               (applied.length ? `; already applied: ${applied.join(", ")}` : ""),
             );
           }
-          applied.push(String(t));
+          applied.push(t);
         }
         const screen = await bridgeCall({ cmd: "screen" }, p.port);
         return text(screen.frame ?? JSON.stringify(screen));
@@ -444,7 +485,7 @@ export function createServer(projects: Record<string, Project> = loadProjects())
       case "defold_bridge": {
         const cmd = String(args.cmd || "");
         if (!cmd) throw new Error("defold_bridge needs a 'cmd' string");
-        const extra = (args.args && typeof args.args === "object") ? args.args as Record<string, unknown> : {};
+        const extra = objectArg(args.args, "args");
         const r = await bridgeCall({ ...extra, cmd }, p.port);
         return text(typeof r?.frame === "string" ? r.frame : JSON.stringify(r, null, 2));
       }
