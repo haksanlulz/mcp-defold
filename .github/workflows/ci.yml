@@ -21,11 +21,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # package.json declares engines >=18, but the DEV toolchain floor is
-        # higher than the runtime floor: vitest pulls a vite that requires
-        # ^20.19 || >=22.12, so `npm ci` cannot install on 18 here. The server
-        # runs under tsx and has no build step, so there is no tarball stage to
-        # prove the lower bound against.
+        # Two floors, and this matrix measures the higher one. package.json
+        # declares engines >=18 for the RUNTIME; the DEV toolchain asks for
+        # more (vitest 4.1.11 wants ^20 || ^22 || >=24, and the vite it pulls,
+        # 8.2.2 as locked, wants ^20.19 || >=22.12). npm only WARNS on engines
+        # unless engine-strict is set and this repo ships no .npmrc, so 18 is
+        # untested here rather than known-broken -- which is what README's
+        # "Two Node floors" paragraph says, and this comment used to contradict.
+        # The server runs under tsx with no build step, so there is no tarball
+        # stage to prove the lower bound against either.
         node: ["20", "22"]
     steps:
       - uses: actions/checkout@v4
