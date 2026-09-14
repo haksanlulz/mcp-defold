@@ -330,6 +330,18 @@ function objectArg(v: unknown, label: string): Record<string, unknown> {
   return v as Record<string, unknown>;
 }
 
+// The bridge command goes to the game verbatim, exactly as trigger ids do, and
+// this tool has the widest input surface of the nine. Coercing it sent the
+// command '[object Object]' (or '7') and the game's "unknown command" came
+// back blaming the bridge for a mistake the client made.
+function commandArg(v: unknown): string {
+  if (typeof v !== "string" || !v) {
+    const got = Array.isArray(v) ? "an array" : v === "" ? "an empty string" : typeof v;
+    throw new Error(`defold_bridge needs a 'cmd' string, got ${got}`);
+  }
+  return v;
+}
+
 // Trigger ids go to the game verbatim. Coercing them meant a client mistake
 // arrived as the trigger '[object Object]' and came back as a bridge error.
 function triggerList(v: unknown): string[] {
@@ -589,8 +601,7 @@ export function createServer(projects?: Record<string, Project>) {
         return text(Array.isArray(r.lines) ? r.lines.join("\n") : JSON.stringify(r));
       }
       case "defold_bridge": {
-        const cmd = String(args.cmd || "");
-        if (!cmd) throw new Error("defold_bridge needs a 'cmd' string");
+        const cmd = commandArg(args.cmd);
         const extra = objectArg(args.args, "args");
         const r = await bridgeCall({ ...extra, cmd }, p.port);
         return text(typeof r?.frame === "string" ? r.frame : JSON.stringify(r, null, 2));

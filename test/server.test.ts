@@ -243,6 +243,24 @@ describe("mcp-defold server", () => {
     expect(received.length).toBe(before);
   });
 
+  it("defold_bridge rejects a non-string cmd, sending nothing", async () => {
+    // Coerced, an object arrived at the game as the command '[object Object]'
+    // and a number as '7' -- the same defect the trigger list shed, left in
+    // place for the tool with the widest input surface.
+    const client = await connect();
+    const before = received.length;
+    await expect(
+      client.callTool({ name: "defold_bridge", arguments: { cmd: { evil: true } } }),
+    ).rejects.toThrow(/needs a 'cmd' string, got object/);
+    await expect(
+      client.callTool({ name: "defold_bridge", arguments: { cmd: 7 } }),
+    ).rejects.toThrow(/needs a 'cmd' string, got number/);
+    await expect(
+      client.callTool({ name: "defold_bridge", arguments: { cmd: "" } }),
+    ).rejects.toThrow(/needs a 'cmd' string, got an empty string/);
+    expect(received.length).toBe(before);
+  });
+
   it("defold_start merges options into the bridge start request", async () => {
     const client = await connect();
     const res = await client.callTool({
