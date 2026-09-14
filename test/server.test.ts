@@ -283,6 +283,80 @@ describe("defold_test exit code", () => {
   }, PWSH_TIMEOUT);
 });
 
+describe("defold_run confirms the bridge itself", () => {
+  const PWSH_TIMEOUT = 30_000;
+  const dirs: string[] = [];
+
+  // A run script that only claims the bridge is live. Every real one pings
+  // first, but this server cannot verify that a given script does -- which is
+  // the gap these two tests pin.
+  function markerOnlyProject(port: number): Project {
+    const dir = mkdtempSync(join(tmpdir(), "mcpdefold-run-"));
+    dirs.push(dir);
+    writeFileSync(join(dir, "r.ps1"), `Write-Output 'bridge LIVE on ${port}'\n`);
+    return { root: dir, port, runScript: "r.ps1" };
+  }
+
+  // A bridge that hangs up on its FIRST caller and answers every one after.
+  // defold_run pings twice for opposite reasons: the preflight must see a
+  // bridge that is NOT live (or it refuses to launch at all), the post-marker
+  // check must see one that IS. One fixture answers both, with no timing race.
+  async function lateBridge(): Promise<{ port: number; close: () => Promise<void> }> {
+    const sockets: net.Socket[] = [];
+    let seen = 0;
+    const srv = net.createServer((sock) => {
+      sockets.push(sock);
+      sock.on("error", () => {});
+      if (++seen === 1) return void sock.destroy(); // no game yet
+      sock.on("data", () => {
+        sock.write(JSON.stringify({ ok: true }) + "\n");
+        sock.end();
+      });
+    });
+    const port = await new Promise<number>((r) =>
+      srv.listen(0, "127.0.0.1", () => r((srv.address() as net.AddressInfo).port)),
+    );
+    return {
+      port,
+      close: () =>
+        new Promise<void>((r) => {
+          for (const s of sockets) s.destroy();
+          srv.close(() => r());
+        }),
+    };
+  }
+
+  afterAll(() => {
+    // defold_run deliberately does not wait for the script to exit, so on
+    // Windows the child can still hold its cwd when the suite ends. A temp
+    // dir left behind is not a failure; failing the suite over it would be.
+    for (const d of dirs) {
+      try {
+        rmSync(d, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+      } catch { /* the OS will reap it */ }
+    }
+  });
+
+  it("errors when the marker is printed but nothing is listening", async () => {
+    const port = await deadPort();
+    const client = await connectWith(markerOnlyProject(port));
+    await expect(
+      client.callTool({ name: "defold_run", arguments: {} }),
+    ).rejects.toThrow(new RegExp(`defold_run:.*no bridge answered on port ${port}`, "s"));
+  }, PWSH_TIMEOUT);
+
+  it("succeeds when the bridge answers after the marker", async () => {
+    const b = await lateBridge();
+    try {
+      const client = await connectWith(markerOnlyProject(b.port));
+      const res = await client.callTool({ name: "defold_run", arguments: {} });
+      expect(textOf(res)).toContain("bridge LIVE on");
+    } finally {
+      await b.close();
+    }
+  }, PWSH_TIMEOUT);
+});
+
 describe("translateSpawnError", () => {
   it("translates pwsh ENOENT into a PATH error", () => {
     const e: NodeJS.ErrnoException = Object.assign(new Error("spawn pwsh ENOENT"), { code: "ENOENT" });

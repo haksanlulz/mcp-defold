@@ -386,6 +386,20 @@ export function createServer(projects: Record<string, Project> = loadProjects())
           timeoutMs: 180_000,
         });
         if (!r.ok) throw new Error(`run failed:\n${r.out.slice(-2000)}`);
+        // The marker is the run script's CLAIM that the bridge is up. Confirm
+        // it here, so "returns when the bridge answers" is true of this server
+        // rather than true of a script this server does not control. Without
+        // it, a script that prints the marker early -- or an engine that binds
+        // the port and dies -- reports a successful launch, and the failure
+        // resurfaces later as a bridge error from whichever tool is called next.
+        try {
+          await bridgeCall({ cmd: "ping" }, p.port);
+        } catch (e: any) {
+          throw new Error(
+            `defold_run: the run script printed the bridge marker, but no bridge answered on port ${p.port}. ` +
+            `Cause: ${e.message}\nScript output:\n${r.out.slice(-2000)}`,
+          );
+        }
         return text(r.out.trim());
       }
       case "defold_stop": {
