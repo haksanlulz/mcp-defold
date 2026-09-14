@@ -27,7 +27,14 @@ npm install
 cp projects.example.json projects.json   # register your game
 ```
 
-Runs directly with [`tsx`](https://github.com/privatenumber/tsx); no build step. Requires Node 18+ and [PowerShell 7](https://github.com/PowerShell/PowerShell) (`pwsh`, cross-platform) for the run scripts.
+Runs directly with [`tsx`](https://github.com/privatenumber/tsx); no build step. [PowerShell 7](https://github.com/PowerShell/PowerShell) (`pwsh`, cross-platform) runs the run and test scripts, and the unit suite spawns it too. Skip the `projects.json` step and the server still starts: the first tool call is what tells you to copy the example.
+
+Two Node floors, and they are different numbers.
+
+- Runtime: `package.json` declares `engines: >=18` and the single runtime dependency agrees, but that bound is declared, not measured. CI runs 20 and 22; nothing here has been run on 18.
+- Development: higher, and measured. `npm install` pulls vitest, which pulls vite (8.2.2 as locked), whose own `engines` are `^20.19.0 || >=22.12.0`. Without `engine-strict` that is a warning rather than a refusal, and this repo ships no `.npmrc`, so an install on 18 is untested rather than known-broken.
+
+Node 20 or newer to work on it. Below that, treat the runtime bound as unverified.
 
 ## Use it from an MCP client
 
@@ -43,6 +50,68 @@ Runs directly with [`tsx`](https://github.com/privatenumber/tsx); no build step.
 ```
 
 Env: `MCP_DEFOLD_PROJECTS` overrides the registry path; `MCP_DEFOLD_DEFAULT` picks the default project.
+
+## A session
+
+Four calls take an agent from nothing to a readable game. The frame below is real output from a private project, with its proper nouns replaced.
+
+**`defold_run`** builds with the bridge compiled in, launches the engine detached, and returns once the bridge answers a ping from this server:
+
+```
+== bob build (variant debug, bridge port 17890) ==
+  bob build OK
+== launching dmengine (detached, log: .defold-tools/last-bridged-run.out) ==
+  pid 30032
+== bridge LIVE on 127.0.0.1:17890 ==
+```
+
+**`defold_start`** begins a run. It exists because injected input cannot reach a GUI front-end: a title screen or character creator has to be skipped through the bridge rather than driven. `options` is whatever your game's bridge accepts, here `{"mode": "casual"}`:
+
+```json
+{"ok": true, "started": true}
+```
+
+**`defold_input`** presses triggers in order and returns the screen. This is `{"triggers": ["key_w", "key_w"]}`, two steps north into a fountain:
+
+```
+== village | Day 1, Hour 08 ==
+HP 17 / 17 | Stamina 25 / 25
+...................>....................
+.,,,,,,.,,,,,,,,,,.:.,,,,,.,,,,,,,,,,,,.
+.,,,,,.,,,,,,,,,,,.:.,,,,,,,,,,,,,,,,,,.
+.,,,,,,,,,,,,,,,,,.:..,,,,,,,,,,,,,,,,,.
+.,,,,,,,,,,,,,,,::::.,,,,,,,,,,,,,,,,,,.
+..........T^^^^^:######^^^^^..........T.
+T..........^^^T^:#__p_#^^^^^..........T.
+...........^^^^^:##+###^^^^^............
+T.........T.....::::...........T........
+...................:....................
+...............v.v.:....................
+...................:....................
+...................:...::::::::.........
+.........::::::%v%%%%%v%.#####:.........
+.........:#####%%%%%%%%%.#___#:.........
+.........:#_S_#%%%%%%%%%.+_H_#:.........
+>:::::::::#___+%%%%O%%%%.#___#:::::::::>
+..........#_N_#%%%%@%%%%v#___#..........
+..........#####%%%%v%%%%.#####..........
+...............%%%%%%%%%................
+....................:%..................
+.................%K%:%%M%%..............
+.................%%%:%%%%%..............
+.................#+#:#+#.#+#............
+.................#_#:#_#.#_#............
+.................###:###.###............
+....................:...................
+~~~~~~~~~~~~~~~~*=========~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~*=========~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~>~~~~~~~~~~~~~~~~~~
+Contract: clear the west field — 0/3 — 14s
+On the stone road | Silver 0 | Talents: none
+The fountain bars the way.
+```
+
+The last line is the game's answer to the second press. Nothing here is rendered by this server: the frame is text the game's own bridge composes, so an agent reads whatever a player would. **`defold_screen`** returns the same frame without pressing anything, **`defold_state`** returns the fields the game chooses to expose as JSON, and **`defold_stop`** quits the game cleanly.
 
 ## What your game has to provide
 
