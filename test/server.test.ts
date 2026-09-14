@@ -400,6 +400,94 @@ describe("defold_run confirms the bridge itself", () => {
   }, PWSH_TIMEOUT);
 });
 
+describe("concurrent bridge calls", () => {
+  // Shaped like the documented bridge: one client at a time. The reference
+  // implementation is server:listen(1) accepting at most one client per
+  // update() tick, so an overlapping caller is dropped rather than queued.
+  // Here that surfaces as a hang-up, which is what makes an unserialized
+  // client fail loudly instead of quietly interleaving.
+  async function oneAtATimeBridge(): Promise<{
+    port: number;
+    overlaps: () => number;
+    close: () => Promise<void>;
+  }> {
+    const sockets: net.Socket[] = [];
+    let busy = false;
+    let overlaps = 0;
+    const srv = net.createServer((sock) => {
+      sockets.push(sock);
+      sock.on("error", () => {});
+      if (busy) {
+        overlaps++;
+        sock.destroy();
+        return;
+      }
+      busy = true;
+      sock.on("data", () => {
+        // Hold the slot long enough that five unserialized calls must collide.
+        setTimeout(() => {
+          sock.write(JSON.stringify({ frame: "day 1  hp 10/10" }) + "\n");
+          sock.end();
+          busy = false;
+        }, 20);
+      });
+    });
+    const port = await new Promise<number>((r) =>
+      srv.listen(0, "127.0.0.1", () => r((srv.address() as net.AddressInfo).port)),
+    );
+    return {
+      port,
+      overlaps: () => overlaps,
+      close: () =>
+        new Promise<void>((r) => {
+          for (const s of sockets) s.destroy();
+          srv.close(() => r());
+        }),
+    };
+  }
+
+  it("five at once all get their frame, and none overlap on the wire", async () => {
+    const b = await oneAtATimeBridge();
+    try {
+      const client = await connectWith({ root: ".", port: b.port, runScript: "r.ps1" });
+      const results = await Promise.all(
+        Array.from({ length: 5 }, () => client.callTool({ name: "defold_screen", arguments: {} })),
+      );
+      expect(results.map(textOf)).toEqual(Array(5).fill("day 1  hp 10/10"));
+      expect(b.overlaps()).toBe(0);
+    } finally {
+      await b.close();
+    }
+  });
+
+  it("a queued call's timeout covers the wait, not only the socket", async () => {
+    // A server that accepts and never answers, so the first call occupies the
+    // slot for its whole budget. The second asked for less time than that: it
+    // must hear back at its own deadline rather than at the first one's.
+    const sockets: net.Socket[] = [];
+    const srv = net.createServer((sock) => {
+      sockets.push(sock);
+      sock.on("error", () => {});
+    });
+    const port = await new Promise<number>((r) =>
+      srv.listen(0, "127.0.0.1", () => r((srv.address() as net.AddressInfo).port)),
+    );
+    try {
+      const t0 = Date.now();
+      const first = bridgeCall({ cmd: "ping" }, port, 400).catch((e: Error) => e);
+      const second = await bridgeCall({ cmd: "ping" }, port, 150).catch((e: Error) => e);
+      const waited = Date.now() - t0;
+      expect(String(second)).toMatch(/bridge timeout after 150ms/);
+      expect(String(second)).toMatch(/still queued/);
+      expect(waited).toBeLessThan(350); // i.e. before the first call's 400ms
+      expect(String(await first)).toMatch(/bridge timeout after 400ms/);
+    } finally {
+      for (const s of sockets) s.destroy();
+      await new Promise<void>((r) => srv.close(() => r()));
+    }
+  });
+});
+
 describe("translateSpawnError", () => {
   it("translates pwsh ENOENT into a PATH error", () => {
     const e: NodeJS.ErrnoException = Object.assign(new Error("spawn pwsh ENOENT"), { code: "ENOENT" });

@@ -59,6 +59,7 @@ The screen is text on purpose: compose whatever view carries your game's state (
 - `defold_input` presses and releases each trigger; nothing can be held down.
 - Bridge input drives the in-game controller, not the GUI front-end; `defold_start` exists because injected input can't get past menus.
 - Run and test scripts are invoked through `pwsh`; there is no other runner.
+- Bridge calls are serialized per port, because the bridge answers one client per frame. Parallel tool calls queue rather than overlap, and each one's timeout covers its wait as well as its socket time.
 
 ## Testing
 
@@ -68,12 +69,12 @@ npm run smoke     # spawn the real server over stdio and exercise its error path
 npm run typecheck
 ```
 
-Two tiers, both offline. `npm test` is the unit tier: 37 tests in 2 files, run in about four seconds. Six of them spawn a real `pwsh` to exercise the exit-code and marker paths, so PowerShell 7 is a requirement of the unit tier as well as of the run scripts. `npm run smoke` spawns the real server as a child process over stdio and checks its error paths and the run-script marker contract; it needs no Defold install and no network.
+Two tiers, both offline. `npm test` is the unit tier: 39 tests in 2 files, run in about four seconds. Six of them spawn a real `pwsh` to exercise the exit-code and marker paths, so PowerShell 7 is a requirement of the unit tier as well as of the run scripts. `npm run smoke` spawns the real server as a child process over stdio and checks its error paths and the run-script marker contract; it needs no Defold install and no network.
 
 Counts, measured 2026-09-14:
 
-- app: 517 lines (`find . -maxdepth 1 -name '*.ts' -not -name '*.test.ts' -not -name 'smoke.ts' | xargs wc -l`; index.ts + server.ts). smoke.ts is another 259 lines of test harness.
-- tests: 601 lines (`find test -name '*.test.ts' | xargs wc -l`), 37 `it()` blocks.
+- app: 586 lines (`find . -maxdepth 1 -name '*.ts' -not -name '*.test.ts' -not -name 'smoke.ts' | xargs wc -l`; index.ts + server.ts). smoke.ts is another 298 lines of test harness.
+- tests: 689 lines (`find test -name '*.test.ts' | xargs wc -l`), 39 `it()` blocks.
 
 What they cover, by layer. The TCP bridge layer: timeout, unreachable port, non-JSON reply, and a 70 KB reply split across chunks. The registry loader: missing file, missing fields, non-string testScript, duplicate ports. The tool handlers: every tool driven through a real MCP client against a fake bridge that speaks the wire protocol, including input ordering, the failing-trigger message, the refuse-to-double-launch preflight, and the missing-root check. A source-level guard pins the import surface to the stdio transport and the runtime dependency list to one entry.
 

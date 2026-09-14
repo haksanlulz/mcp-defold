@@ -78,7 +78,52 @@ export function loadProjects(regPath?: string): Record<string, Project> {
 
 type BridgeReq = Record<string, unknown> & { cmd: string };
 
+// One in-flight call per port. The documented bridge accepts at most one
+// client per frame behind listen(1), while MCP clients issue tool calls in
+// parallel: two concurrent calls survive on the backlog, a third is refused
+// and surfaces as "bridge unreachable ... Launch with defold_run", an error
+// naming exactly the wrong fix. The quieter damage is a defold_screen issued
+// alongside a defold_input sequence returning a frame from the middle of it.
+const inFlight = new Map<number, Promise<void>>();
+
 export function bridgeCall(req: BridgeReq, port: number, timeoutMs = 8000): Promise<any> {
+  const queuedAt = Date.now();
+  const prev = inFlight.get(port) ?? Promise.resolve();
+
+  // The next caller waits for MY socket work to finish, not merely for my
+  // promise to settle -- a call that gave up on the queue must not leave the
+  // one behind it free to dial while this one is still tearing down.
+  let release!: () => void;
+  const tail = prev.then(() => new Promise<void>((r) => (release = r)));
+  inFlight.set(port, tail);
+  void tail.then(() => {
+    if (inFlight.get(port) === tail) inFlight.delete(port); // don't grow per port
+  });
+
+  return new Promise((resolve, reject) => {
+    // The deadline starts HERE, not at connect, and fires while still queued:
+    // a caller told 8000ms must not wait 8000ms behind a wedged call and only
+    // then begin its own 8000ms. It gets the answer at the time it asked for.
+    let expired = false;
+    const deadline = setTimeout(() => {
+      expired = true;
+      reject(new Error(
+        `bridge timeout after ${timeoutMs}ms on ${BRIDGE_HOST}:${port} (still queued behind an earlier call)`,
+      ));
+    }, timeoutMs);
+    const run = () => {
+      if (expired) return release(); // caller is gone; never dial on its behalf
+      const left = Math.max(timeoutMs - (Date.now() - queuedAt), 1);
+      bridgeSocketCall(req, port, left).then(
+        (v) => { clearTimeout(deadline); release(); resolve(v); },
+        (e) => { clearTimeout(deadline); release(); reject(e); },
+      );
+    };
+    void prev.then(run, run);
+  });
+}
+
+function bridgeSocketCall(req: BridgeReq, port: number, timeoutMs: number): Promise<any> {
   return new Promise((resolve, reject) => {
     const sock = net.createConnection({ host: BRIDGE_HOST, port });
     const chunks: Buffer[] = [];
