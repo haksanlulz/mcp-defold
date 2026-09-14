@@ -62,12 +62,15 @@ beforeAll(async () => {
 
 afterAll(() => bridgeServer.close());
 
-async function connectWith(proj: Project): Promise<Client> {
-  const server = createServer({ testgame: proj });
+async function connectTo(server: ReturnType<typeof createServer>): Promise<Client> {
   const client = new Client({ name: "test", version: "1.0.0" }, { capabilities: {} });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
   return client;
+}
+
+async function connectWith(proj: Project): Promise<Client> {
+  return connectTo(createServer({ testgame: proj }));
 }
 
 async function connect(): Promise<Client> {
@@ -88,6 +91,67 @@ async function deadPort(): Promise<number> {
 function textOf(res: any): string {
   return res.content[0].text;
 }
+
+/* ---------------------------------------------- run-script fixtures (pwsh) */
+
+// A cold pwsh start can exceed vitest's 5s default on its own.
+const PWSH_TIMEOUT = 30_000;
+const scriptDirs: string[] = [];
+
+// Write a throwaway project whose run script is `body`.
+function scriptProject(body: string, port: number, key: "runScript" | "testScript" = "runScript"): Project {
+  const dir = mkdtempSync(join(tmpdir(), "mcpdefold-script-"));
+  scriptDirs.push(dir);
+  const file = key === "runScript" ? "r.ps1" : "t.ps1";
+  writeFileSync(join(dir, file), body);
+  return { root: dir, port, runScript: "r.ps1", ...(key === "testScript" ? { testScript: "t.ps1" } : {}) };
+}
+
+// A run script that only CLAIMS the bridge is live. Every real one pings
+// first, but this server cannot verify that a given script does.
+function markerOnlyProject(port: number): Project {
+  return scriptProject(`Write-Output 'bridge LIVE on ${port}'\n`, port);
+}
+
+// A bridge that hangs up on its FIRST caller and answers every one after.
+// defold_run pings twice for opposite reasons: the preflight must see a
+// bridge that is NOT live (or it refuses to launch at all), the post-marker
+// check must see one that IS. One fixture answers both, with no timing race.
+async function lateBridge(): Promise<{ port: number; close: () => Promise<void> }> {
+  const sockets: net.Socket[] = [];
+  let seen = 0;
+  const srv = net.createServer((sock) => {
+    sockets.push(sock);
+    sock.on("error", () => {});
+    if (++seen === 1) return void sock.destroy(); // no game yet
+    sock.on("data", () => {
+      sock.write(JSON.stringify({ ok: true }) + "\n");
+      sock.end();
+    });
+  });
+  const port = await new Promise<number>((r) =>
+    srv.listen(0, "127.0.0.1", () => r((srv.address() as net.AddressInfo).port)),
+  );
+  return {
+    port,
+    close: () =>
+      new Promise<void>((r) => {
+        for (const s of sockets) s.destroy();
+        srv.close(() => r());
+      }),
+  };
+}
+
+afterAll(() => {
+  // defold_run deliberately does not wait for the script to exit, so on
+  // Windows the child can still hold its cwd when the suite ends. A temp dir
+  // left behind is not a failure; failing the suite over it would be.
+  for (const d of scriptDirs) {
+    try {
+      rmSync(d, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    } catch { /* the OS will reap it */ }
+  }
+});
 
 describe("mcp-defold server", () => {
   it("exposes all nine tools", async () => {
@@ -270,30 +334,17 @@ describe("mcp-defold server", () => {
 // and the GitHub ubuntu runner image ships it, so the suite stays offline
 // without becoming machine-specific.
 describe("defold_test exit code", () => {
-  // A cold pwsh start can exceed vitest's 5s default on its own.
-  const PWSH_TIMEOUT = 30_000;
-  const dirs: string[] = [];
-
-  function scriptProject(body: string): Project {
-    const dir = mkdtempSync(join(tmpdir(), "mcpdefold-suite-"));
-    dirs.push(dir);
-    writeFileSync(join(dir, "t.ps1"), body);
-    return { root: dir, port: bridgePort, runScript: "run.ps1", testScript: "t.ps1" };
-  }
-
-  afterAll(() => {
-    for (const d of dirs) rmSync(d, { recursive: true, force: true });
-  });
+  const suite = (body: string) => scriptProject(body, bridgePort, "testScript");
 
   it("returns the tail as a normal result when the suite passes", async () => {
-    const client = await connectWith(scriptProject("Write-Output 'Total: 20 run, 0 failed'\nexit 0\n"));
+    const client = await connectWith(suite("Write-Output 'Total: 20 run, 0 failed'\nexit 0\n"));
     const res = await client.callTool({ name: "defold_test", arguments: {} });
     expect(textOf(res)).toContain("exit 0");
     expect(textOf(res)).toContain("20 run, 0 failed");
   }, PWSH_TIMEOUT);
 
   it("reports a failing suite as a failed tool call naming the exit code", async () => {
-    const client = await connectWith(scriptProject("Write-Output 'Total: 20 run, 1 failed'\nexit 1\n"));
+    const client = await connectWith(suite("Write-Output 'Total: 20 run, 1 failed'\nexit 1\n"));
     await expect(
       client.callTool({ name: "defold_test", arguments: {} }),
     ).rejects.toThrow(/test suite failed: exit 1/);
@@ -302,7 +353,7 @@ describe("defold_test exit code", () => {
   it("tail widens the window that would otherwise drop the failure line", async () => {
     // The assertion fails first, then 20 more lines scroll past it: the
     // 12-line default window cannot show the line that names the failure.
-    const client = await connectWith(scriptProject(
+    const client = await connectWith(suite(
       "Write-Output 'BANNER-FAILURE hp was 9 expected 10'\n" +
       "1..20 | ForEach-Object { Write-Output \"noise $_\" }\n" +
       "exit 1\n",
@@ -321,59 +372,6 @@ describe("defold_test exit code", () => {
 });
 
 describe("defold_run confirms the bridge itself", () => {
-  const PWSH_TIMEOUT = 30_000;
-  const dirs: string[] = [];
-
-  // A run script that only claims the bridge is live. Every real one pings
-  // first, but this server cannot verify that a given script does -- which is
-  // the gap these two tests pin.
-  function markerOnlyProject(port: number): Project {
-    const dir = mkdtempSync(join(tmpdir(), "mcpdefold-run-"));
-    dirs.push(dir);
-    writeFileSync(join(dir, "r.ps1"), `Write-Output 'bridge LIVE on ${port}'\n`);
-    return { root: dir, port, runScript: "r.ps1" };
-  }
-
-  // A bridge that hangs up on its FIRST caller and answers every one after.
-  // defold_run pings twice for opposite reasons: the preflight must see a
-  // bridge that is NOT live (or it refuses to launch at all), the post-marker
-  // check must see one that IS. One fixture answers both, with no timing race.
-  async function lateBridge(): Promise<{ port: number; close: () => Promise<void> }> {
-    const sockets: net.Socket[] = [];
-    let seen = 0;
-    const srv = net.createServer((sock) => {
-      sockets.push(sock);
-      sock.on("error", () => {});
-      if (++seen === 1) return void sock.destroy(); // no game yet
-      sock.on("data", () => {
-        sock.write(JSON.stringify({ ok: true }) + "\n");
-        sock.end();
-      });
-    });
-    const port = await new Promise<number>((r) =>
-      srv.listen(0, "127.0.0.1", () => r((srv.address() as net.AddressInfo).port)),
-    );
-    return {
-      port,
-      close: () =>
-        new Promise<void>((r) => {
-          for (const s of sockets) s.destroy();
-          srv.close(() => r());
-        }),
-    };
-  }
-
-  afterAll(() => {
-    // defold_run deliberately does not wait for the script to exit, so on
-    // Windows the child can still hold its cwd when the suite ends. A temp
-    // dir left behind is not a failure; failing the suite over it would be.
-    for (const d of dirs) {
-      try {
-        rmSync(d, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
-      } catch { /* the OS will reap it */ }
-    }
-  });
-
   it("errors when the marker is printed but nothing is listening", async () => {
     const port = await deadPort();
     const client = await connectWith(markerOnlyProject(port));
@@ -386,10 +384,9 @@ describe("defold_run confirms the bridge itself", () => {
     // The scan decides here, while the script is still running, so there is no
     // exit code to report -- unlike the no-marker case below.
     const port = await deadPort();
-    const dir = mkdtempSync(join(tmpdir(), "mcpdefold-run-"));
-    dirs.push(dir);
-    writeFileSync(join(dir, "r.ps1"), "Write-Output 'FAIL: bob could not resolve dependencies'\nexit 1\n");
-    const client = await connectWith({ root: dir, port, runScript: "r.ps1" });
+    const client = await connectWith(
+      scriptProject("Write-Output 'FAIL: bob could not resolve dependencies'\nexit 1\n", port),
+    );
     const err = await client.callTool({ name: "defold_run", arguments: {} }).catch((e: Error) => e);
     expect(String(err)).toMatch(/run failed:/);
     expect(String(err)).toContain("bob could not resolve dependencies");
@@ -400,10 +397,9 @@ describe("defold_run confirms the bridge itself", () => {
     // bob and java say what went wrong in the exit code; the marker scan used
     // to drop it, leaving "run failed:" and 2000 characters of output.
     const port = await deadPort();
-    const dir = mkdtempSync(join(tmpdir(), "mcpdefold-run-"));
-    dirs.push(dir);
-    writeFileSync(join(dir, "r.ps1"), "Write-Output 'bob.jar: cannot find main'\nexit 3\n");
-    const client = await connectWith({ root: dir, port, runScript: "r.ps1" });
+    const client = await connectWith(
+      scriptProject("Write-Output 'bob.jar: cannot find main'\nexit 3\n", port),
+    );
     await expect(
       client.callTool({ name: "defold_run", arguments: {} }),
     ).rejects.toThrow(/run failed \(exit 3\)/);
@@ -425,6 +421,137 @@ describe("defold_run confirms the bridge itself", () => {
 // failed one. Until this was a function, the only thing pinning them was the
 // smoke's grep of server.ts for two string literals -- which stays green even
 // if the scan stops consulting either regex.
+// Five things the README, PROTOCOL.md or a tool schema promises, and that
+// nothing drove until now.
+describe("documented behaviour with no other coverage", () => {
+  it("defold_log asks for 40 lines by default", async () => {
+    const client = await connect();
+    const before = received.length;
+    await client.callTool({ name: "defold_log", arguments: {} });
+    expect(received.slice(before)).toEqual([{ cmd: "log", tail: 40 }]);
+  });
+
+  it("defold_log passes an explicit tail through, and ignores a useless one", async () => {
+    const client = await connect();
+    let before = received.length;
+    await client.callTool({ name: "defold_log", arguments: { tail: 5 } });
+    expect(received.slice(before)).toEqual([{ cmd: "log", tail: 5 }]);
+
+    before = received.length;
+    await client.callTool({ name: "defold_log", arguments: { tail: 0 } });
+    expect(received.slice(before)).toEqual([{ cmd: "log", tail: 40 }]);
+  });
+
+  it("defold_run passes -SkipBuild to the run script when asked", async () => {
+    // The flag only exists on the far side of pwsh, so read it back from the
+    // script's own stdout rather than from anything this process can see.
+    const b = await lateBridge();
+    try {
+      const proj = scriptProject(
+        "param([switch]$SkipBuild)\n" +
+        "Write-Output \"skipbuild=$SkipBuild\"\n" +
+        `Write-Output 'bridge LIVE on ${b.port}'\n`,
+        b.port,
+      );
+      const client = await connectWith(proj);
+      const res = await client.callTool({ name: "defold_run", arguments: { skip_build: true } });
+      expect(textOf(res)).toContain("skipbuild=True");
+    } finally {
+      await b.close();
+    }
+  }, PWSH_TIMEOUT);
+
+  it("defold_run leaves -SkipBuild off by default", async () => {
+    const b = await lateBridge();
+    try {
+      const proj = scriptProject(
+        "param([switch]$SkipBuild)\n" +
+        "Write-Output \"skipbuild=$SkipBuild\"\n" +
+        `Write-Output 'bridge LIVE on ${b.port}'\n`,
+        b.port,
+      );
+      const client = await connectWith(proj);
+      const res = await client.callTool({ name: "defold_run", arguments: {} });
+      expect(textOf(res)).toContain("skipbuild=False");
+    } finally {
+      await b.close();
+    }
+  }, PWSH_TIMEOUT);
+
+  it("MCP_DEFOLD_DEFAULT picks which project an unqualified call targets", async () => {
+    // 'first' is registration order's default and points at nothing; 'second'
+    // is the live fake bridge. The frame can only come from the env var.
+    const prev = process.env.MCP_DEFOLD_DEFAULT;
+    const dead = await deadPort();
+    try {
+      process.env.MCP_DEFOLD_DEFAULT = "second";
+      const client = await connectTo(createServer({
+        first: { root: ".", port: dead, runScript: "r.ps1" },
+        second: { root: ".", port: bridgePort, runScript: "r.ps1" },
+      }));
+      expect(textOf(await client.callTool({ name: "defold_screen", arguments: {} }))).toContain("@ . . .");
+
+      delete process.env.MCP_DEFOLD_DEFAULT;
+      const fallback = await connectTo(createServer({
+        first: { root: ".", port: dead, runScript: "r.ps1" },
+        second: { root: ".", port: bridgePort, runScript: "r.ps1" },
+      }));
+      await expect(
+        fallback.callTool({ name: "defold_screen", arguments: {} }),
+      ).rejects.toThrow(new RegExp(`bridge unreachable on 127\\.0\\.0\\.1:${dead}`));
+    } finally {
+      if (prev === undefined) delete process.env.MCP_DEFOLD_DEFAULT;
+      else process.env.MCP_DEFOLD_DEFAULT = prev;
+    }
+  });
+
+  it("defold_bridge returns a frame as text and everything else as JSON", async () => {
+    const client = await connect();
+    const framed = await client.callTool({ name: "defold_bridge", arguments: { cmd: "screen" } });
+    expect(textOf(framed)).toBe("day 1  hp 10/10\n@ . . .");
+
+    const other = await client.callTool({ name: "defold_bridge", arguments: { cmd: "advance" } });
+    expect(JSON.parse(textOf(other)).echo.cmd).toBe("advance");
+  });
+
+  it("bridgeCall names a bridge that hung up before replying", async () => {
+    // Exactly what a game quitting mid-request produces, which is defold_stop's
+    // ordinary race. It was the only bridgeCall failure path without a test.
+    const srv = net.createServer((sock) => {
+      sock.on("error", () => {});
+      sock.on("data", () => sock.end());
+    });
+    const port = await new Promise<number>((r) =>
+      srv.listen(0, "127.0.0.1", () => r((srv.address() as net.AddressInfo).port)),
+    );
+    try {
+      await expect(bridgeCall({ cmd: "quit" }, port, 2000))
+        .rejects.toThrow(/bridge closed before completing a reply/);
+    } finally {
+      await new Promise<void>((r) => srv.close(() => r()));
+    }
+  });
+
+  it("a hang-up mid-reply reports what arrived before it", async () => {
+    const srv = net.createServer((sock) => {
+      sock.on("error", () => {});
+      sock.on("data", () => {
+        sock.write('{"ok":tr'); // no newline: the reply never completes
+        sock.end();
+      });
+    });
+    const port = await new Promise<number>((r) =>
+      srv.listen(0, "127.0.0.1", () => r((srv.address() as net.AddressInfo).port)),
+    );
+    try {
+      await expect(bridgeCall({ cmd: "quit" }, port, 2000))
+        .rejects.toThrow(/bridge closed before completing a reply \(got: \{"ok":tr\)/);
+    } finally {
+      await new Promise<void>((r) => srv.close(() => r()));
+    }
+  });
+});
+
 describe("markerVerdict", () => {
   const SUCCESS = /bridge LIVE on /;
   const FAILURE = /^FAIL:/m;
