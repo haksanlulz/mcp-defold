@@ -82,8 +82,13 @@ type BridgeReq = Record<string, unknown> & { cmd: string };
 // client per frame behind listen(1), while MCP clients issue tool calls in
 // parallel: two concurrent calls survive on the backlog, a third is refused
 // and surfaces as "bridge unreachable ... Launch with defold_run", an error
-// naming exactly the wrong fix. The quieter damage is a defold_screen issued
-// alongside a defold_input sequence returning a frame from the middle of it.
+// naming exactly the wrong fix.
+//
+// What this does NOT buy is atomicity per TOOL. The mutex is per CALL, and
+// defold_input makes one call per trigger plus one for the screen, so a
+// defold_screen issued alongside it can still land between two presses. That
+// is not fixable by holding the mutex across a tool: the tool's own bridgeCalls
+// would queue behind their own holder and deadlock.
 const inFlight = new Map<number, Promise<void>>();
 
 // A call that spent its whole budget waiting for the slot and never dialed.

@@ -129,6 +129,7 @@ The screen is text on purpose: compose whatever view carries your game's state (
 - Bridge input drives the in-game controller, not the GUI front-end; `defold_start` exists because injected input can't get past menus.
 - Run and test scripts are invoked through `pwsh`; there is no other runner.
 - Bridge calls are serialized per port, because the bridge answers one client per frame. Parallel tool calls queue rather than overlap, and each one's timeout covers its wait as well as its socket time.
+- That serialization is per call, not per tool. `defold_input` makes one call per trigger plus one for the screen, so a `defold_screen` fired in parallel can return a frame from the middle of the sequence. Drive one tool at a time when the order matters.
 
 ## Testing
 
