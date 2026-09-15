@@ -8,7 +8,7 @@ I built it because tests and simulators kept passing on builds of my own games t
 
 | Tool | What it does |
 |------|--------------|
-| `defold_run` | Build with the bridge enabled and launch, detached. Returns when the bridge answers a ping from this server, not merely when the run script says it should. `skip_build` relaunches fast. |
+| `defold_run` | Build with the bridge enabled and launch, detached. Returns when the bridge answers a ping from this server, not merely when the run script says it should — the one exception being a ping that never leaves the per-port queue, which means another call is already connected there. `skip_build` relaunches fast. |
 | `defold_stop` | Quit the running game cleanly. |
 | `defold_start` | Skip the front-end (title/chargen) and begin a run. `options` passes game-defined start options through. |
 | `defold_input` | Press input triggers in order, then return the screen. |
@@ -55,7 +55,7 @@ Env: `MCP_DEFOLD_PROJECTS` overrides the registry path; `MCP_DEFOLD_DEFAULT` pic
 
 Four calls take an agent from nothing to a readable game. The frame below is real output from a private project, with its proper nouns replaced.
 
-**`defold_run`** builds with the bridge compiled in, launches the engine detached, and returns once the bridge answers a ping from this server:
+**`defold_run`** builds with the bridge compiled in, launches the engine detached, and returns once the bridge answers a ping from this server (with the queue exception noted in the table above):
 
 ```
 == bob build (variant debug, bridge port 17890) ==
