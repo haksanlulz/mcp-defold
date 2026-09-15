@@ -68,7 +68,7 @@ Four calls take an agent from nothing to a readable game. The frame below is rea
 **`defold_start`** begins a run. It exists because injected input cannot reach a GUI front-end: a title screen or character creator has to be skipped through the bridge rather than driven. `options` is whatever your game's bridge accepts, here `{"mode": "casual"}`:
 
 ```json
-{"ok": true, "started": true}
+{"ok":true,"started":true}
 ```
 
 **`defold_input`** presses triggers in order and returns the screen. This is `{"triggers": ["key_w", "key_w"]}`, two steps north into a fountain:
