@@ -357,6 +357,18 @@ describe("mcp-defold server", () => {
     }
   });
 
+  it("rejects a non-string project rather than falling back to the default", async () => {
+    // The falsy ones are the dangerous half: 0, false and "" all failed the
+    // `|| DEFAULT_PROJECT` test, so a client that named a game wrong drove the
+    // default game instead, and the frame it got back looked perfectly normal.
+    const client = await connect();
+    for (const project of [0, false, 7, ["testgame"], { name: "testgame" }]) {
+      await expect(
+        client.callTool({ name: "defold_screen", arguments: { project } }),
+      ).rejects.toThrow(/project must be a string, got (number|boolean|an array|object)/);
+    }
+  });
+
   it("defold_test errors when the project has no testScript", async () => {
     const client = await connect();
     await expect(

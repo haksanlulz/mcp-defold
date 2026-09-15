@@ -382,6 +382,20 @@ function boolArg(v: unknown, label: string): boolean {
   return v;
 }
 
+// The argument that decides WHICH game gets driven, and the last one left
+// unchecked. `(args.project as string) || DEFAULT` is not a coercion but it is
+// not a check either: every falsy non-string -- 0, false, "" -- fell through to
+// the default project, so a client that named a game wrong drove a different
+// one with nothing in the output saying so. A wrong TYPE is an error; absent
+// is still the default.
+function projectArg(v: unknown, fallback: string): string {
+  if (v === undefined || v === null) return fallback;
+  if (typeof v !== "string") {
+    throw new Error(`project must be a string, got ${Array.isArray(v) ? "an array" : typeof v}`);
+  }
+  return v || fallback;
+}
+
 // Trigger ids go to the game verbatim. Coercing them meant a client mistake
 // arrived as the trigger '[object Object]' and came back as a bridge error.
 function triggerList(v: unknown): string[] {
@@ -424,7 +438,7 @@ export function createServer(projects?: Record<string, Project>) {
     // Re-raised on EVERY call: a registry that never loaded is not transient,
     // and a caller who fixes it restarts the server anyway.
     if (registryError) throw registryError;
-    const name = (args.project as string) || DEFAULT_PROJECT;
+    const name = projectArg(args.project, DEFAULT_PROJECT);
     // Object.prototype keys ('toString', 'constructor', 'hasOwnProperty',
     // '__proto__') are truthy on any plain object, and a registry is one --
     // JSON.parse'd, or a caller's literal. A bare index handed back an
