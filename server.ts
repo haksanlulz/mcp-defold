@@ -619,8 +619,16 @@ export function createServer(projects?: Record<string, Project>) {
           // nothing -- a wedged engine still holding the socket. A port a
           // process is holding is not a port a second engine can bind, so this
           // has to refuse the launch rather than invite one that ends up
-          // driving the old instance. Only a REFUSED dial says the port is
-          // empty.
+          // driving the old instance.
+          //
+          // Three completed-dial outcomes are still read as an empty port:
+          // non-JSON, a reply that is not an object, and a hang-up before a
+          // reply. Each of those also proves something accepted the connection,
+          // so the honest reading is "occupied" -- but the four tests that
+          // simulate "no game yet" do it by destroying the first socket on
+          // accept, so folding them in is a fixture change rather than a guard
+          // change and belongs in its own pass. Recorded here so it reads as a
+          // decision rather than an oversight.
           if (e instanceof BridgeQueueTimeout || e instanceof BridgeSocketTimeout) alreadyLive = true;
         }
         if (alreadyLive) {
