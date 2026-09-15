@@ -96,6 +96,12 @@ const inFlight = new Map<number, Promise<void>>();
 // port is empty" from "the port is busy" should not be matching message text.
 export class BridgeQueueTimeout extends Error {}
 
+// The dial COMPLETED and something accepted it, then went quiet -- a wedged
+// engine still holding the socket. Its own type for the same reason as the one
+// above: whether the port is occupied is a control-flow question, not a
+// string-matching one.
+export class BridgeSocketTimeout extends Error {}
+
 export function bridgeCall(req: BridgeReq, port: number, timeoutMs = 8000): Promise<any> {
   const queuedAt = Date.now();
   const prev = inFlight.get(port) ?? Promise.resolve();
@@ -158,7 +164,7 @@ function bridgeSocketCall(req: BridgeReq, port: number, timeoutMs: number, budge
       fn();
     };
     const timer = setTimeout(() => {
-      finish(() => reject(new Error(`bridge timeout after ${budgetMs}ms on ${BRIDGE_HOST}:${port} (is the game running? use defold_run)`)));
+      finish(() => reject(new BridgeSocketTimeout(`bridge timeout after ${budgetMs}ms on ${BRIDGE_HOST}:${port} (is the game running? use defold_run)`)));
     }, timeoutMs);
     sock.on("connect", () => sock.write(JSON.stringify(req) + "\n"));
     sock.on("data", (d) => {
@@ -587,9 +593,15 @@ export function createServer(projects?: Record<string, Project>) {
           // holds the slot by having connected -- something is answering there.
           // Reading that as "safe to launch" put a second engine on top of a
           // running game, which is the one thing this preflight exists to stop.
-          // Only a completed dial -- refused, or accepted and then silent --
-          // says the port is empty.
-          if (e instanceof BridgeQueueTimeout) alreadyLive = true;
+          //
+          // A socket timeout is the same evidence one step further along: the
+          // dial COMPLETED, something on this port accepted it and then said
+          // nothing -- a wedged engine still holding the socket. A port a
+          // process is holding is not a port a second engine can bind, so this
+          // has to refuse the launch rather than invite one that ends up
+          // driving the old instance. Only a REFUSED dial says the port is
+          // empty.
+          if (e instanceof BridgeQueueTimeout || e instanceof BridgeSocketTimeout) alreadyLive = true;
         }
         if (alreadyLive) {
           throw new Error(

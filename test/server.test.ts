@@ -417,6 +417,35 @@ describe("mcp-defold server", () => {
     // only needs room for the 2.5s the holder occupies the slot.
   }, 15_000);
 
+  it("defold_run refuses when the port is held by something that never answers", async () => {
+    // The dial COMPLETES here -- something accepted it -- and then nothing
+    // comes back: a wedged engine still holding the socket. That is not an
+    // empty port, and a second engine cannot bind a port a process is holding,
+    // so the launch has to be refused rather than reported as a success that
+    // ends up driving the old instance.
+    //
+    // The root does not exist, so a preflight that lets the launch through
+    // fails on the disk check instead -- a distinct red, and no pwsh spawned.
+    const sockets: net.Socket[] = [];
+    const srv = net.createServer((sock) => {
+      sockets.push(sock);
+      sock.on("error", () => {}); // accepted, never answered
+    });
+    const port = await new Promise<number>((r) =>
+      srv.listen(0, "127.0.0.1", () => r((srv.address() as net.AddressInfo).port)),
+    );
+    try {
+      const client = await connectWith({ root: "C:/mcp-defold-no-such-root", port, runScript: "r.ps1" });
+      await expect(
+        client.callTool({ name: "defold_run", arguments: {} }),
+      ).rejects.toThrow(/already running on port .*defold_stop/);
+    } finally {
+      for (const s of sockets) s.destroy();
+      await new Promise<void>((r) => srv.close(() => r()));
+    }
+    // Room for the preflight's own 2000ms budget to run out.
+  }, 15_000);
+
   it("defold_run reports a clear error when the project root is missing", async () => {
     // Point at a dead port so the preflight passes, then the pre-spawn disk
     // check must fire instead of a raw spawn ENOENT.
