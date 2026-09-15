@@ -642,6 +642,15 @@ describe("documented behaviour with no other coverage", () => {
     expect(received.slice(before)).toEqual([]); // and nothing reached the game
   });
 
+  it("rejects an unknown argument with a near-miss before touching a project or a port", async () => {
+    const client = await connect();
+    const before = received.length;
+    await expect(
+      client.callTool({ name: "defold_run", arguments: { skip_buld: true } as any }),
+    ).rejects.toThrow(/defold_run does not accept "skip_buld" \(did you mean "skip_build"\?\)/);
+    expect(received.slice(before)).toEqual([]);
+  });
+
   it("rejects a wrong-typed skip_build instead of reading it for truthiness", async () => {
     // The string "false" is truthy, so this flag could silently relaunch the
     // LAST build: the agent then drives a game that does not contain the

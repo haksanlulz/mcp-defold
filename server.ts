@@ -438,6 +438,66 @@ function triggerList(v: unknown): string[] {
 
 // --- server ---------------------------------------------------------------------
 
+
+// ---------------------------------------------------------------------------
+// Unknown-argument guard. The low-level SDK Server hands the arguments object
+// to the handler without validating it against inputSchema, so every schema's
+// additionalProperties:false is advisory: a caller who typed `found_afer` got
+// a full-history answer they believed was date-limited, and nothing said so.
+// Same helper, same wording, in every one of the operator's TypeScript servers.
+
+function editDistance(a: string, b: string): number {
+  let prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i++) {
+    const row = [i];
+    for (let j = 1; j <= b.length; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      row[j] = Math.min(prev[j] + 1, row[j - 1] + 1, prev[j - 1] + cost);
+    }
+    prev = row;
+  }
+  return prev[b.length];
+}
+
+/** The closest accepted argument name, if it is close enough to be a typo. */
+function nearestArg(key: string, accepted: string[]): string | null {
+  let best: string | null = null;
+  let bestDistance = Infinity;
+  for (const candidate of accepted) {
+    const d = editDistance(key.toLowerCase(), candidate.toLowerCase());
+    if (d < bestDistance) {
+      bestDistance = d;
+      best = candidate;
+    }
+  }
+  // Scale with the length of what was typed: one edit is a typo in a short name,
+  // three is still a typo in a long one, and neither makes "bogus_param" a
+  // misspelling of "limit".
+  return bestDistance <= Math.max(1, Math.floor(key.length / 3)) ? best : null;
+}
+
+/** Reject arguments the tool does not declare, naming the likely intended one. */
+function validateArgs(toolName: string, accepted: string[], args: Record<string, unknown>): void {
+  const unknown = Object.keys(args).filter((k) => !accepted.includes(k));
+  if (unknown.length === 0) return;
+  const described = unknown.map((k) => {
+    const near = nearestArg(k, accepted);
+    return near ? `"${k}" (did you mean "${near}"?)` : `"${k}"`;
+  });
+  throw new Error(
+    `${toolName} does not accept ${described.join(", ")}. ` +
+      `Accepted arguments: ${accepted.join(", ")}. Nothing was queried.`,
+  );
+}
+
+/** Declared argument names of a tool, from the same list ListTools serves. */
+function acceptedArgsOf(tools: ReadonlyArray<{ name: string; inputSchema?: unknown }>, name: string): string[] | null {
+  const tool = tools.find((t) => t.name === name);
+  if (!tool) return null;
+  const props = (tool.inputSchema as { properties?: Record<string, unknown> } | undefined)?.properties;
+  return Object.keys(props ?? {});
+}
+
 export function createServer(projects?: Record<string, Project>) {
   // A registry that will not load is the likeliest first-run failure, and the
   // error text already says how to fix it. Loading it eagerly sent that text
@@ -494,8 +554,7 @@ export function createServer(projects?: Record<string, Project>) {
     },
   };
 
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: [
+  const TOOLS = [
       {
         name: "defold_run",
         description:
@@ -590,11 +649,13 @@ export function createServer(projects?: Record<string, Project>) {
           },
         },
       },
-    ],
-  }));
+  ];
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }));
 
   server.setRequestHandler(CallToolRequestSchema, async (req) => {
     const { name, arguments: args = {} } = req.params;
+    const accepted = acceptedArgsOf(TOOLS, name);
+    if (accepted) validateArgs(name, accepted, args as Record<string, unknown>);
     const p = resolveProject(args);
     switch (name) {
       case "defold_run": {
