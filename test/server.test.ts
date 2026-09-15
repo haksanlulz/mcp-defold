@@ -1018,6 +1018,32 @@ describe("bridgeCall failure paths", () => {
     }
   });
 
+  it("bridgeCall rejects a reply that parses but is not an object", async () => {
+    // Every one of these is a legal JSON line and none is a bridge reply. The
+    // consumers index what they get (r.frame, r.lines), so before this the
+    // caller saw "Cannot read properties of null (reading 'frame')" out of
+    // defold_screen -- an error naming neither the bridge nor the reply.
+    for (const payload of ["null", "7", '"a frame"', "[1,2]"]) {
+      const srv = net.createServer((sock) => {
+        sock.on("error", () => {});
+        sock.on("data", () => {
+          sock.write(payload + "\n");
+          sock.end();
+        });
+      });
+      const port = await new Promise<number>((r) =>
+        srv.listen(0, "127.0.0.1", () => r((srv.address() as net.AddressInfo).port)),
+      );
+      try {
+        await expect(bridgeCall({ cmd: "screen" }, port, 1000)).rejects.toThrow(
+          new RegExp(`non-object reply: ${payload.replace(/[[\]"]/g, "\\$&")}`),
+        );
+      } finally {
+        await new Promise<void>((r) => srv.close(() => r()));
+      }
+    }
+  });
+
   it("bridgeCall reassembles a large reply split across TCP chunks", async () => {
     const blob = "x".repeat(70000); // larger than one TCP segment: exercises the chunk buffer
     const srv = net.createServer((sock) => {

@@ -171,11 +171,24 @@ function bridgeSocketCall(req: BridgeReq, port: number, timeoutMs: number, budge
       if (!buf.includes(0x0a)) return; // wait for the newline byte; decode once, chunk-split-safe
       const line = Buffer.concat(chunks).toString("utf-8").split("\n", 1)[0];
       finish(() => {
+        let reply: unknown;
         try {
-          resolve(JSON.parse(line));
+          reply = JSON.parse(line);
         } catch {
           reject(new Error(`bridge sent non-JSON: ${line.slice(0, 200)}`));
+          return;
         }
+        // A reply is one JSON OBJECT per line (PROTOCOL.md). `null`, a number,
+        // a string and an array all parse, and every consumer indexes what it
+        // gets -- r.frame, r.lines -- so a bridge answering `null` handed the
+        // caller Node's "Cannot read properties of null (reading 'frame')",
+        // blaming nothing. Checked here rather than at the four call sites,
+        // where only defold_bridge's `r?.frame` ever guarded it.
+        if (reply === null || typeof reply !== "object" || Array.isArray(reply)) {
+          reject(new Error(`bridge sent a non-object reply: ${line.slice(0, 200)}`));
+          return;
+        }
+        resolve(reply);
       });
     });
     sock.on("close", () => {
