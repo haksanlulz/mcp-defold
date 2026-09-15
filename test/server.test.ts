@@ -950,6 +950,13 @@ describe("concurrent bridge calls", () => {
     // dials with less than its budget left. Both halves of its message have
     // been wrong: the figure (the remainder, which matches no timeout any
     // caller set) and the cause (a queue it has by then left).
+    //
+    // The figures are spread wide on purpose. Correct behaviour lands near
+    // 900ms (600ms queued, then what is left of 900ms) and the defect near
+    // 1500ms (600ms queued, then a FRESH 900ms), so the 1150ms threshold has
+    // ~250ms of margin on each side. Tighter than that and the one test
+    // pinning the remaining-budget arithmetic flakes on a loaded CI runner --
+    // and a flaky guard gets weakened rather than believed.
     const sockets: net.Socket[] = [];
     let seen = 0;
     const srv = net.createServer((sock) => {
@@ -961,7 +968,7 @@ describe("concurrent bridge calls", () => {
         setTimeout(() => {
           sock.write(JSON.stringify({ ok: true }) + "\n");
           sock.end();
-        }, 250);
+        }, 600);
       });
     });
     const port = await new Promise<number>((r) =>
@@ -970,17 +977,17 @@ describe("concurrent bridge calls", () => {
     try {
       const t0 = Date.now();
       const first = bridgeCall({ cmd: "ping" }, port, 2000);
-      const second = bridgeCall({ cmd: "ping" }, port, 400).catch((e: Error) => e);
+      const second = bridgeCall({ cmd: "ping" }, port, 900).catch((e: Error) => e);
       expect(await first).toEqual({ ok: true });
       const e = await second;
       const waited = Date.now() - t0;
-      expect(String(e)).toMatch(/bridge timeout after 400ms/); // not the ~150ms remainder
+      expect(String(e)).toMatch(/bridge timeout after 900ms/); // not the ~300ms remainder
       expect(String(e)).toMatch(/is the game running\? use defold_run/);
       expect(String(e)).not.toMatch(/still queued/);
-      // The budget covers the wait AS WELL AS the socket: ~250ms queued plus
-      // what is LEFT of 400ms, not 250ms plus a fresh 400ms. Without this the
+      // The budget covers the wait AS WELL AS the socket: ~600ms queued plus
+      // what is LEFT of 900ms, not 600ms plus a fresh 900ms. Without this the
       // remaining-budget arithmetic can be deleted and the suite stays green.
-      expect(waited).toBeLessThan(500);
+      expect(waited).toBeLessThan(1150);
     } finally {
       for (const s of sockets) s.destroy();
       await new Promise<void>((r) => srv.close(() => r()));
