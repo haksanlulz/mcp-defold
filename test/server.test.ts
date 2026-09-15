@@ -829,6 +829,38 @@ describe("concurrent bridge calls", () => {
     }
   });
 
+  it("a call that gave up in the queue still frees the slot behind it", async () => {
+    // The expired caller never dials, so nothing else can hand the slot on: if
+    // it returns without releasing, every later call on this port waits out its
+    // own budget and reports "still queued" forever.
+    const sockets: net.Socket[] = [];
+    let seen = 0;
+    const srv = net.createServer((sock) => {
+      sockets.push(sock);
+      sock.on("error", () => {});
+      const nth = ++seen;
+      sock.on("data", () => {
+        if (nth === 1) return; // holds the slot until its own budget runs out
+        sock.write(JSON.stringify({ ok: true }) + "\n");
+        sock.end();
+      });
+    });
+    const port = await new Promise<number>((r) =>
+      srv.listen(0, "127.0.0.1", () => r((srv.address() as net.AddressInfo).port)),
+    );
+    try {
+      const holder = bridgeCall({ cmd: "ping" }, port, 300).catch((e: Error) => e);
+      const gaveUp = bridgeCall({ cmd: "ping" }, port, 50).catch((e: Error) => e);
+      const after = bridgeCall({ cmd: "ping" }, port, 2000);
+      expect(String(await gaveUp)).toMatch(/still queued/);
+      expect(String(await holder)).toMatch(/is the game running/);
+      expect(await after).toEqual({ ok: true }); // rejects "still queued" if the slot leaked
+    } finally {
+      for (const s of sockets) s.destroy();
+      await new Promise<void>((r) => srv.close(() => r()));
+    }
+  });
+
   it("a call that waited its turn reports its own budget and blames the game", async () => {
     // First caller is answered after a beat; the second therefore waits, then
     // dials with less than its budget left. Both halves of its message have
