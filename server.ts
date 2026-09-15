@@ -405,12 +405,21 @@ function boolArg(v: unknown, label: string): boolean {
 // the default project, so a client that named a game wrong drove a different
 // one with nothing in the output saying so. A wrong TYPE is an error; absent
 // is still the default.
+//
+// The empty string is a NAMED project, not an absent one: a caller that built
+// the name from a variable and got "" asked for a game, and answering it with
+// the default is the same silent substitution by another route. Its two
+// sibling validators, commandArg and triggerList, both reject it; this one now
+// matches them.
 function projectArg(v: unknown, fallback: string): string {
   if (v === undefined || v === null) return fallback;
   if (typeof v !== "string") {
     throw new Error(`project must be a string, got ${Array.isArray(v) ? "an array" : typeof v}`);
   }
-  return v || fallback;
+  if (!v) {
+    throw new Error("project must be a non-empty string");
+  }
+  return v;
 }
 
 // Trigger ids go to the game verbatim. Coercing them meant a client mistake

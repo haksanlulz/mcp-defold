@@ -369,6 +369,18 @@ describe("mcp-defold server", () => {
     }
   });
 
+  it("rejects an empty project name rather than falling back to the default", async () => {
+    // The third falsy value, and the one the type check does not catch: "" is
+    // a string, so it reached `v || fallback` and drove the default game. A
+    // caller that built the name from a variable and got "" asked for a game
+    // by name; answering with a different one is the same silent substitution
+    // the type check exists to stop.
+    const client = await connect();
+    await expect(
+      client.callTool({ name: "defold_screen", arguments: { project: "" } }),
+    ).rejects.toThrow(/project must be a non-empty string/);
+  });
+
   it("defold_test errors when the project has no testScript", async () => {
     const client = await connect();
     await expect(
