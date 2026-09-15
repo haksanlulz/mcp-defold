@@ -11,6 +11,6 @@
     "declaration": false,
     "sourceMap": false
   },
-  "include": ["index.ts", "server.ts", "test"],
+  "include": ["index.ts", "server.ts", "smoke.ts", "test"],
   "exclude": ["node_modules", "dist"]
 }
