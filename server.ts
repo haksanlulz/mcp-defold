@@ -331,6 +331,17 @@ function text(s: string) {
   return { content: [{ type: "text" as const, text: s }] };
 }
 
+// A `frame` that is not a string is not a frame. `r.frame ?? JSON.stringify(r)`
+// fell back only on null and undefined, so a bridge answering {"frame": 42}
+// put a number into the result's `text` -- and the CLIENT's schema check then
+// rejected the whole call with "Invalid tools/call result", an error naming
+// neither the bridge, nor the field, nor the game. Falling back to the JSON is
+// what the caller can actually read. One helper for all three frame-reading
+// tools, so defold_screen and defold_bridge cannot drift apart on it again.
+function frameOrJson(r: any): string {
+  return typeof r?.frame === "string" ? r.frame : JSON.stringify(r, null, 2);
+}
+
 // Shared by defold_log and defold_test: a caller-supplied line count, or the
 // tool's own default when nothing was passed.
 //
@@ -667,11 +678,11 @@ export function createServer(projects?: Record<string, Project>) {
           applied.push(t);
         }
         const screen = await bridgeCall({ cmd: "screen" }, p.port);
-        return text(screen.frame ?? JSON.stringify(screen));
+        return text(frameOrJson(screen));
       }
       case "defold_screen": {
         const r = await bridgeCall({ cmd: "screen" }, p.port);
-        return text(r.frame ?? JSON.stringify(r));
+        return text(frameOrJson(r));
       }
       case "defold_state": {
         const r = await bridgeCall({ cmd: "state" }, p.port);
@@ -686,7 +697,7 @@ export function createServer(projects?: Record<string, Project>) {
         const cmd = commandArg(args.cmd);
         const extra = objectArg(args.args, "args");
         const r = await bridgeCall({ ...extra, cmd }, p.port);
-        return text(typeof r?.frame === "string" ? r.frame : JSON.stringify(r, null, 2));
+        return text(frameOrJson(r));
       }
       case "defold_test": {
         if (!p.testScript) throw new Error(`project has no testScript configured`);

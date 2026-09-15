@@ -717,6 +717,37 @@ describe("documented behaviour with no other coverage", () => {
     expect(JSON.parse(textOf(other)).echo.cmd).toBe("advance");
   });
 
+  it("a frame that is not a string comes back as readable JSON", async () => {
+    // A `frame` field is a string or it is not a frame. Falling back only on
+    // null and undefined put a number into the result's `text`, and the
+    // CLIENT's schema check then rejected the whole call with "Invalid
+    // tools/call result" -- an error naming neither the bridge nor the field
+    // nor the game. defold_screen and defold_input both read this field;
+    // defold_bridge already tested its own half above.
+    const sockets: net.Socket[] = [];
+    const srv = net.createServer((sock) => {
+      sockets.push(sock);
+      sock.on("error", () => {});
+      sock.on("data", () => {
+        sock.write(JSON.stringify({ frame: 42 }) + "\n");
+        sock.end();
+      });
+    });
+    const port = await new Promise<number>((r) =>
+      srv.listen(0, "127.0.0.1", () => r((srv.address() as net.AddressInfo).port)),
+    );
+    try {
+      const client = await connectWith({ root: ".", port, runScript: "r.ps1" });
+      const screen = await client.callTool({ name: "defold_screen", arguments: {} });
+      expect(JSON.parse(textOf(screen)).frame).toBe(42);
+      const pressed = await client.callTool({ name: "defold_input", arguments: { triggers: ["key_w"] } });
+      expect(JSON.parse(textOf(pressed)).frame).toBe(42);
+    } finally {
+      for (const s of sockets) s.destroy();
+      await new Promise<void>((r) => srv.close(() => r()));
+    }
+  });
+
   it("bridgeCall names a bridge that hung up before replying", async () => {
     // Exactly what a game quitting mid-request produces, which is defold_stop's
     // ordinary race. It was the only bridgeCall failure path without a test.
