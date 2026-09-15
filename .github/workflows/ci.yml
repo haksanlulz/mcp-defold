@@ -39,6 +39,12 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run typecheck
+      # Ten of these spawn `pwsh`, and nothing here installs it: ubuntu-latest
+      # is Ubuntu 24.04 (actions/runner-images README) whose image ships
+      # PowerShell 7.6.5 (images/ubuntu/Ubuntu2404-Readme.md, "PowerShell
+      # Tools"). That is the vendor's manifest, not a measurement — this
+      # workflow has never run, so whether those ten pass on Linux is unknown
+      # until the first push, and a red here is a finding rather than a fluke.
       - run: npm test
       # Unlike the sibling scryfall server, this smoke is OFFLINE — it spawns the
       # real server over stdio and checks the error paths and the run-script
