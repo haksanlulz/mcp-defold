@@ -845,20 +845,26 @@ describe("concurrent bridge calls", () => {
         setTimeout(() => {
           sock.write(JSON.stringify({ ok: true }) + "\n");
           sock.end();
-        }, 120);
+        }, 250);
       });
     });
     const port = await new Promise<number>((r) =>
       srv.listen(0, "127.0.0.1", () => r((srv.address() as net.AddressInfo).port)),
     );
     try {
+      const t0 = Date.now();
       const first = bridgeCall({ cmd: "ping" }, port, 2000);
       const second = bridgeCall({ cmd: "ping" }, port, 400).catch((e: Error) => e);
       expect(await first).toEqual({ ok: true });
       const e = await second;
-      expect(String(e)).toMatch(/bridge timeout after 400ms/); // not the ~280ms remainder
+      const waited = Date.now() - t0;
+      expect(String(e)).toMatch(/bridge timeout after 400ms/); // not the ~150ms remainder
       expect(String(e)).toMatch(/is the game running\? use defold_run/);
       expect(String(e)).not.toMatch(/still queued/);
+      // The budget covers the wait AS WELL AS the socket: ~250ms queued plus
+      // what is LEFT of 400ms, not 250ms plus a fresh 400ms. Without this the
+      // remaining-budget arithmetic can be deleted and the suite stays green.
+      expect(waited).toBeLessThan(500);
     } finally {
       for (const s of sockets) s.destroy();
       await new Promise<void>((r) => srv.close(() => r()));
