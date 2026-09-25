@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   bridgeCall,
+  BridgeUnreachable,
   createServer,
   loadProjects,
   markerVerdict,
@@ -493,6 +494,7 @@ describe("mcp-defold server", () => {
     ["replies with something that is not JSON", (sock) => sock.on("data", () => { sock.write("HTTP/1.1 400 Bad Request\n"); sock.end(); })],
     ["replies with JSON that is not an object", (sock) => sock.on("data", () => { sock.write("null\n"); sock.end(); })],
     ["hangs up before replying", (sock) => sock.on("data", () => sock.end())],
+    ["resets the connection before replying", (sock) => sock.on("data", () => sock.resetAndDestroy())],
   ];
   for (const [what, onConnection] of holders) {
     it(`defold_run refuses when the port is held by something that ${what}`, async () => {
@@ -1188,6 +1190,27 @@ describe("bridgeCall failure paths", () => {
   it("bridgeCall rejects as unreachable when nothing is listening", async () => {
     const port = await deadPort();
     await expect(bridgeCall({ cmd: "ping" }, port, 1000)).rejects.toThrow(/bridge unreachable/);
+  });
+
+  it("bridgeCall does not send a caller to defold_run when the holder resets after accepting", async () => {
+    // A reset after connect means something holds the port. defold_run's
+    // preflight refuses on exactly that, so "Launch with defold_run" here
+    // would send the caller straight into a refusal.
+    const srv = net.createServer((sock) => {
+      sock.on("error", () => {});
+      sock.on("data", () => sock.resetAndDestroy());
+    });
+    const port = await new Promise<number>((r) =>
+      srv.listen(0, "127.0.0.1", () => r((srv.address() as net.AddressInfo).port)),
+    );
+    try {
+      const err = await bridgeCall({ cmd: "ping" }, port, 2000).catch((e: Error) => e);
+      expect(err).not.toBeInstanceOf(BridgeUnreachable);
+      expect(err.message).toMatch(/reset before a reply/);
+      expect(err.message).not.toMatch(/Launch with defold_run/);
+    } finally {
+      await new Promise<void>((r) => srv.close(() => r()));
+    }
   });
 
   it("bridgeCall rejects when the bridge sends a non-JSON line", async () => {

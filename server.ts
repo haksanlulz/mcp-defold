@@ -211,10 +211,13 @@ function bridgeSocketCall(req: BridgeReq, port: number, timeoutMs: number, budge
       finish(() => reject(new Error(`bridge closed before completing a reply (got: ${got.slice(0, 200)})`)));
     });
     sock.on("error", (e) => {
-      // Same message either way; only the type differs. An error after the
-      // connect (a reset) is not an empty port, so it is not BridgeUnreachable.
-      const msg = `bridge unreachable on ${BRIDGE_HOST}:${port} (${e.message}). Launch with defold_run.`;
-      finish(() => reject(connected ? new Error(msg) : new BridgeUnreachable(msg)));
+      // Before connect: nothing accepted the dial, so the port is empty.
+      // After connect: something accepted it and then reset. The port is
+      // held, so "launch with defold_run" would send the caller straight
+      // into the preflight's refusal.
+      finish(() => reject(connected
+        ? new Error(`bridge connection on ${BRIDGE_HOST}:${port} was reset before a reply (${e.message}). Something holds the port, so defold_run will refuse; its refusal says how to clear it.`)
+        : new BridgeUnreachable(`bridge unreachable on ${BRIDGE_HOST}:${port} (${e.message}). Launch with defold_run.`)));
     });
   });
 }
