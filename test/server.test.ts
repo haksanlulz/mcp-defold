@@ -435,9 +435,13 @@ describe("mcp-defold server", () => {
     const holder = bridgeCall({ cmd: "screen" }, port, 2500).catch(() => {});
     try {
       const client = await connectWith({ root: ".", port, runScript: "r.ps1" });
-      await expect(
-        client.callTool({ name: "defold_run", arguments: {} }),
-      ).rejects.toThrow(/already running on port .*defold_stop/);
+      const err = String(await client.callTool({ name: "defold_run", arguments: {} }).catch((e: Error) => e));
+      expect(err).toMatch(/already running on port .*defold_stop/);
+      // The ping never dialed, so nothing failed to answer it. Another call of
+      // this server is connected: a live bridge, not a wedged one.
+      expect(err).toContain("another bridge call is still connected");
+      expect(err).not.toContain("wedged");
+      expect(err).not.toContain("did not answer a ping");
     } finally {
       await holder;
       for (const s of sockets) s.destroy();
@@ -478,6 +482,14 @@ describe("mcp-defold server", () => {
       expect(err).toContain(`end the process listening on port ${port}`);
       expect(err).toContain(`Get-NetTCPConnection -LocalPort ${port} -State Listen`);
       expect(err).toContain(`lsof -nP -iTCP:${port} -sTCP:LISTEN`);
+      // The socket timeout's own advice is "use defold_run". Nested inside a
+      // refusal to launch, it would name the call that was just refused.
+      expect(err.toLowerCase()).not.toContain("use defold_run");
+      expect(err).not.toContain("Launch with defold_run");
+      // Nothing proves the holder is the game, so ending it is conditional,
+      // and a foreign holder gets its own way out.
+      expect(err).toContain("If it is this project's game");
+      expect(err).toContain("another port in projects.json");
     } finally {
       for (const s of sockets) s.destroy();
       await new Promise<void>((r) => srv.close(() => r()));
@@ -509,9 +521,13 @@ describe("mcp-defold server", () => {
       );
       try {
         const client = await connectWith({ root: "C:/mcp-defold-no-such-root", port, runScript: "r.ps1" });
-        await expect(
-          client.callTool({ name: "defold_run", arguments: {} }),
-        ).rejects.toThrow(/already running on port .*defold_stop/);
+        const err = String(await client.callTool({ name: "defold_run", arguments: {} }).catch((e: Error) => e));
+        expect(err).toMatch(/already running on port .*defold_stop/);
+        // An HTTP reply is plainly not the game. The refusal must not tell
+        // the caller to end whatever holds the port as if it were.
+        expect(err).toContain("another port in projects.json");
+        expect(err.toLowerCase()).not.toContain("use defold_run");
+        expect(err).not.toContain("Launch with defold_run");
       } finally {
         for (const s of sockets) s.destroy();
         await new Promise<void>((r) => srv.close(() => r()));

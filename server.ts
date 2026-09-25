@@ -91,21 +91,33 @@ type BridgeReq = Record<string, unknown> & { cmd: string };
 // would queue behind their own holder and deadlock.
 const inFlight = new Map<number, Promise<void>>();
 
+// A bridge failure keeps what the socket saw apart from the advice written for
+// an ordinary call. defold_run's preflight nests the observation inside its
+// own refusal, where that advice ("use defold_run") would name the call being
+// refused. The message is the two joined, so callers see no change.
+export class BridgeError extends Error {
+  readonly observed: string;
+  constructor(observed: string, advice = "") {
+    super(advice ? `${observed} ${advice}` : observed);
+    this.observed = observed;
+  }
+}
+
 // A call that spent its whole budget waiting for the slot and never dialed.
 // Its own type, not merely its own wording: a caller that has to tell "the
 // port is empty" from "the port is busy" should not be matching message text.
-export class BridgeQueueTimeout extends Error {}
+export class BridgeQueueTimeout extends BridgeError {}
 
 // The dial COMPLETED and something accepted it, then went quiet -- a wedged
 // engine still holding the socket. Its own type for the same reason as the one
 // above: whether the port is occupied is a control-flow question, not a
 // string-matching one.
-export class BridgeSocketTimeout extends Error {}
+export class BridgeSocketTimeout extends BridgeError {}
 
 // The dial itself failed: nothing accepted the connection (refused, or no
 // route). The one failure that says the port is empty. Every other failure
 // happens after something accepted the dial, so it says the port is held.
-export class BridgeUnreachable extends Error {}
+export class BridgeUnreachable extends BridgeError {}
 
 export function bridgeCall(req: BridgeReq, port: number, timeoutMs = 8000): Promise<any> {
   const queuedAt = Date.now();
@@ -169,7 +181,7 @@ function bridgeSocketCall(req: BridgeReq, port: number, timeoutMs: number, budge
       fn();
     };
     const timer = setTimeout(() => {
-      finish(() => reject(new BridgeSocketTimeout(`bridge timeout after ${budgetMs}ms on ${BRIDGE_HOST}:${port} (is the game running? use defold_run)`)));
+      finish(() => reject(new BridgeSocketTimeout(`bridge timeout after ${budgetMs}ms on ${BRIDGE_HOST}:${port}`, "(is the game running? use defold_run)")));
     }, timeoutMs);
     let connected = false;
     sock.on("connect", () => {
@@ -216,8 +228,8 @@ function bridgeSocketCall(req: BridgeReq, port: number, timeoutMs: number, budge
       // held, so "launch with defold_run" would send the caller straight
       // into the preflight's refusal.
       finish(() => reject(connected
-        ? new Error(`bridge connection on ${BRIDGE_HOST}:${port} was reset before a reply (${e.message}). Something holds the port, so defold_run will refuse; its refusal says how to clear it.`)
-        : new BridgeUnreachable(`bridge unreachable on ${BRIDGE_HOST}:${port} (${e.message}). Launch with defold_run.`)));
+        ? new BridgeError(`bridge connection on ${BRIDGE_HOST}:${port} was reset before a reply (${e.message}).`, "Something holds the port, so defold_run will refuse; its refusal says how to clear it.")
+        : new BridgeUnreachable(`bridge unreachable on ${BRIDGE_HOST}:${port} (${e.message}).`, "Launch with defold_run.")));
     });
   });
 }
@@ -689,6 +701,7 @@ export function createServer(projects?: Record<string, Project>) {
         // Launching a second instance would leave us silently driving the
         // stale one (the new engine can't bind the port the old one holds).
         let alreadyLive = false;
+        let queued = false;
         let silentHolder: string | undefined; // why the ping failed, when something holds the port
         try {
           await bridgeCall({ cmd: "ping" }, p.port, 2000);
@@ -711,26 +724,39 @@ export function createServer(projects?: Record<string, Project>) {
           // before a reply are the same evidence again: each proves something
           // accepted the connection. So the rule is the dial, not the reply:
           // only BridgeUnreachable (nothing accepted it) reads as an empty port.
-          if (!(e instanceof BridgeUnreachable)) {
+          if (e instanceof BridgeQueueTimeout) {
+            // Never dialed, so nothing failed to answer it. Another call of
+            // this server is connected there: a live bridge, not a wedged one.
             alreadyLive = true;
-            silentHolder = (e as Error).message;
+            queued = true;
+          } else if (!(e instanceof BridgeUnreachable)) {
+            alreadyLive = true;
+            // What the socket saw, without the advice written for an ordinary
+            // call: the timeout's "use defold_run" would name the call this
+            // refusal is refusing.
+            silentHolder = e instanceof BridgeError ? e.observed : (e as Error).message;
           }
         }
         if (alreadyLive && silentHolder === undefined) {
-          throw new Error(
-            `a bridged game is already running on port ${p.port}; stop it with defold_stop first`,
-          );
+          throw new Error(queued
+            ? `a bridged game is already running on port ${p.port} and another bridge call is still connected to it; let that call finish, or stop the game with defold_stop first`
+            : `a bridged game is already running on port ${p.port}; stop it with defold_stop first`);
         }
         if (alreadyLive) {
-          // The holder did not answer, so the plain advice is a closed loop:
-          // defold_stop is itself a bridge call, and a wedged engine never acts
-          // on it. Name the step after that, with the port to look up.
+          // The holder gave no bridge reply, so the plain advice is a closed
+          // loop: defold_stop is itself a bridge call, and a wedged engine never
+          // acts on it. Name the step after that, with the port to look up. The
+          // holder may be a wedged engine or another program (an HTTP reply is
+          // plainly not the game), so ending it is conditional on which.
           throw new Error(
             `something is already running on port ${p.port} but did not answer a ping (${silentHolder}). ` +
             `Try defold_stop first. defold_stop sends the bridge quit command, which only a bridge that answers acts on. ` +
-            `If it fails too, the engine is wedged: end the process listening on port ${p.port} ` +
+            `If it fails too, find the process listening on port ${p.port} ` +
             `(Windows: Get-NetTCPConnection -LocalPort ${p.port} -State Listen | Select-Object OwningProcess; ` +
-            `elsewhere: lsof -nP -iTCP:${p.port} -sTCP:LISTEN), then call defold_run again.`,
+            `elsewhere: lsof -nP -iTCP:${p.port} -sTCP:LISTEN). ` +
+            `If it is this project's game, it is wedged: end the process listening on port ${p.port}. ` +
+            `If it is another program, the port is taken: end that program or give this project another port in projects.json. ` +
+            `Then call defold_run again.`,
           );
         }
         const a = [p.runScript];
