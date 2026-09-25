@@ -466,9 +466,17 @@ describe("mcp-defold server", () => {
     );
     try {
       const client = await connectWith({ root: "C:/mcp-defold-no-such-root", port, runScript: "r.ps1" });
-      await expect(
-        client.callTool({ name: "defold_run", arguments: {} }),
-      ).rejects.toThrow(/already running on port .*defold_stop/);
+      const err = String(await client.callTool({ name: "defold_run", arguments: {} }).catch((e: Error) => e));
+      expect(err).toMatch(/already running on port .*defold_stop/);
+      // "Stop it with defold_stop" alone is a closed loop for a wedged engine:
+      // defold_stop sends the bridge quit command, which a holder that never
+      // answers never acts on. The refusal has to name the step after that:
+      // end the process listening on this port, and how to find it.
+      expect(err).toContain("did not answer a ping");
+      expect(err).toContain("defold_stop sends the bridge quit command");
+      expect(err).toContain(`end the process listening on port ${port}`);
+      expect(err).toContain(`Get-NetTCPConnection -LocalPort ${port} -State Listen`);
+      expect(err).toContain(`lsof -nP -iTCP:${port} -sTCP:LISTEN`);
     } finally {
       for (const s of sockets) s.destroy();
       await new Promise<void>((r) => srv.close(() => r()));

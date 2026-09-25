@@ -686,6 +686,7 @@ export function createServer(projects?: Record<string, Project>) {
         // Launching a second instance would leave us silently driving the
         // stale one (the new engine can't bind the port the old one holds).
         let alreadyLive = false;
+        let silentHolder: string | undefined; // why the ping failed, when something holds the port
         try {
           await bridgeCall({ cmd: "ping" }, p.port, 2000);
           alreadyLive = true;
@@ -707,11 +708,26 @@ export function createServer(projects?: Record<string, Project>) {
           // before a reply are the same evidence again: each proves something
           // accepted the connection. So the rule is the dial, not the reply:
           // only BridgeUnreachable (nothing accepted it) reads as an empty port.
-          if (!(e instanceof BridgeUnreachable)) alreadyLive = true;
+          if (!(e instanceof BridgeUnreachable)) {
+            alreadyLive = true;
+            silentHolder = (e as Error).message;
+          }
         }
-        if (alreadyLive) {
+        if (alreadyLive && silentHolder === undefined) {
           throw new Error(
             `a bridged game is already running on port ${p.port}; stop it with defold_stop first`,
+          );
+        }
+        if (alreadyLive) {
+          // The holder did not answer, so the plain advice is a closed loop:
+          // defold_stop is itself a bridge call, and a wedged engine never acts
+          // on it. Name the step after that, with the port to look up.
+          throw new Error(
+            `something is already running on port ${p.port} but did not answer a ping (${silentHolder}). ` +
+            `Try defold_stop first. defold_stop sends the bridge quit command, which only a bridge that answers acts on. ` +
+            `If it fails too, the engine is wedged: end the process listening on port ${p.port} ` +
+            `(Windows: Get-NetTCPConnection -LocalPort ${p.port} -State Listen | Select-Object OwningProcess; ` +
+            `elsewhere: lsof -nP -iTCP:${p.port} -sTCP:LISTEN), then call defold_run again.`,
           );
         }
         const a = [p.runScript];
