@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import net from "node:net";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -113,69 +113,87 @@ function markerOnlyProject(port: number): Project {
   return scriptProject(`Write-Output 'bridge LIVE on ${port}'\n`, port);
 }
 
-// A bridge that hangs up on its FIRST caller and answers every one after.
-// defold_run pings twice for opposite reasons: the preflight must see a
-// bridge that is NOT live (or it refuses to launch at all), the post-marker
-// check must see one that IS. One fixture answers both, with no timing race.
-async function lateBridge(): Promise<{ port: number; close: () => Promise<void> }> {
-  const sockets: net.Socket[] = [];
-  let seen = 0;
-  const srv = net.createServer((sock) => {
-    sockets.push(sock);
-    sock.on("error", () => {});
-    if (++seen === 1) return void sock.destroy(); // no game yet
+// A bridge that is not there yet when defold_run's preflight dials, and comes
+// up once the run script has started. defold_run pings twice for opposite
+// reasons: the preflight must see an EMPTY port (or it refuses to launch at
+// all), the post-marker check must see a bridge. The preflight only reads a
+// refused dial as empty -- anything that accepts the connection is holding the
+// port -- so "no game yet" has to be nothing listening at all.
+//
+// The handshake is two files, so there is no timing race. `prelude` goes at
+// the top of the run script: it announces the script has started (which is
+// after the preflight, by construction) and waits for the listener. The test
+// side sees the announcement, listens on the port, then releases the script.
+// `release: false` leaves the release to the test, for a test that needs
+// something in place on the port before the script prints its marker.
+async function lateBridge(opts: {
+  onConnection?: (sock: net.Socket) => void;
+  release?: boolean;
+} = {}): Promise<{
+  port: number;
+  prelude: string;
+  up: Promise<void>;
+  release: () => void;
+  close: () => Promise<void>;
+}> {
+  const onConnection = opts.onConnection ?? ((sock: net.Socket) => {
     sock.on("data", () => {
       sock.write(JSON.stringify({ ok: true }) + "\n");
       sock.end();
     });
   });
-  const port = await new Promise<number>((r) =>
-    srv.listen(0, "127.0.0.1", () => r((srv.address() as net.AddressInfo).port)),
-  );
+  const port = await deadPort();
+  const dir = mkdtempSync(join(tmpdir(), "mcpdefold-late-"));
+  scriptDirs.push(dir);
+  const started = join(dir, "started");
+  const ready = join(dir, "ready");
+  const sockets: net.Socket[] = [];
+  let srv: net.Server | undefined;
+  let stopped = false;
+  const release = () => writeFileSync(ready, "");
+  const up = (async () => {
+    const deadline = Date.now() + 20_000;
+    while (!existsSync(started)) {
+      if (stopped || Date.now() > deadline) throw new Error("lateBridge: the run script never started");
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    const s = net.createServer((sock) => {
+      sockets.push(sock);
+      sock.on("error", () => {});
+      onConnection(sock);
+    });
+    srv = s;
+    await new Promise<void>((r, j) => {
+      s.once("error", j);
+      s.listen(port, "127.0.0.1", () => r());
+    });
+    if (opts.release !== false) release();
+  })();
+  up.catch(() => {}); // surfaced by whoever awaits it; never an unhandled rejection
+  // The wait is bounded, so a test that fails before releasing cannot leave a
+  // pwsh child polling forever.
+  const prelude =
+    `New-Item -ItemType File -Path '${started}' | Out-Null\n` +
+    `$until = (Get-Date).AddSeconds(25)\n` +
+    `while (-not (Test-Path '${ready}') -and (Get-Date) -lt $until) { Start-Sleep -Milliseconds 20 }\n`;
   return {
     port,
-    close: () =>
-      new Promise<void>((r) => {
-        for (const s of sockets) s.destroy();
-        srv.close(() => r());
-      }),
+    prelude,
+    up,
+    release,
+    close: async () => {
+      stopped = true;
+      await up.catch(() => {});
+      for (const s of sockets) s.destroy();
+      if (srv?.listening) await new Promise<void>((r) => srv!.close(() => r()));
+    },
   };
 }
 
-// A bridge that hangs up on its FIRST caller -- so defold_run's preflight sees
-// no live game -- and then accepts every later caller without ever replying.
-// Whoever dials second therefore holds this port's one call slot for as long
-// as the test needs, which is what puts a later call in the queue.
-async function slotHoldingBridge(): Promise<{
-  port: number;
-  firstDial: Promise<void>;
-  close: () => Promise<void>;
-}> {
-  const sockets: net.Socket[] = [];
-  let seen = 0;
-  let announce!: () => void;
-  const firstDial = new Promise<void>((r) => (announce = r));
-  const srv = net.createServer((sock) => {
-    sockets.push(sock);
-    sock.on("error", () => {});
-    if (++seen === 1) {
-      sock.destroy(); // no game yet
-      announce();
-    }
-    // Every caller after the first: accepted, never answered.
-  });
-  const port = await new Promise<number>((r) =>
-    srv.listen(0, "127.0.0.1", () => r((srv.address() as net.AddressInfo).port)),
-  );
-  return {
-    port,
-    firstDial,
-    close: () =>
-      new Promise<void>((r) => {
-        for (const s of sockets) s.destroy();
-        srv.close(() => r());
-      }),
-  };
+// A run script that waits for a lateBridge and then prints the marker. `head`
+// goes before the prelude, because a PowerShell param() block must come first.
+function lateMarkerProject(b: { port: number; prelude: string }, head = "", body = ""): Project {
+  return scriptProject(head + b.prelude + body + `Write-Output 'bridge LIVE on ${b.port}'\n`, b.port);
 }
 
 afterAll(() => {
@@ -458,6 +476,39 @@ describe("mcp-defold server", () => {
     // Room for the preflight's own 2000ms budget to run out.
   }, 15_000);
 
+  // The other completed-dial outcomes. Each proves something accepted the
+  // connection, so each is a port a second engine cannot bind. They used to
+  // read as an empty port and let the launch through. As above, the root does
+  // not exist, so a preflight that lets the launch through fails on the disk
+  // check instead, and no pwsh is spawned.
+  const holders: [string, (sock: net.Socket) => void][] = [
+    ["replies with something that is not JSON", (sock) => sock.on("data", () => { sock.write("HTTP/1.1 400 Bad Request\n"); sock.end(); })],
+    ["replies with JSON that is not an object", (sock) => sock.on("data", () => { sock.write("null\n"); sock.end(); })],
+    ["hangs up before replying", (sock) => sock.on("data", () => sock.end())],
+  ];
+  for (const [what, onConnection] of holders) {
+    it(`defold_run refuses when the port is held by something that ${what}`, async () => {
+      const sockets: net.Socket[] = [];
+      const srv = net.createServer((sock) => {
+        sockets.push(sock);
+        sock.on("error", () => {});
+        onConnection(sock);
+      });
+      const port = await new Promise<number>((r) =>
+        srv.listen(0, "127.0.0.1", () => r((srv.address() as net.AddressInfo).port)),
+      );
+      try {
+        const client = await connectWith({ root: "C:/mcp-defold-no-such-root", port, runScript: "r.ps1" });
+        await expect(
+          client.callTool({ name: "defold_run", arguments: {} }),
+        ).rejects.toThrow(/already running on port .*defold_stop/);
+      } finally {
+        for (const s of sockets) s.destroy();
+        await new Promise<void>((r) => srv.close(() => r()));
+      }
+    });
+  }
+
   it("defold_run reports a clear error when the project root is missing", async () => {
     // Point at a dead port so the preflight passes, then the pre-spawn disk
     // check must fire instead of a raw spawn ENOENT.
@@ -562,7 +613,7 @@ describe("defold_run confirms the bridge itself", () => {
   it("succeeds when the bridge answers after the marker", async () => {
     const b = await lateBridge();
     try {
-      const client = await connectWith(markerOnlyProject(b.port));
+      const client = await connectWith(lateMarkerProject(b));
       const res = await client.callTool({ name: "defold_run", arguments: {} });
       expect(textOf(res)).toContain("bridge LIVE on");
     } finally {
@@ -576,18 +627,23 @@ describe("defold_run confirms the bridge itself", () => {
     // thirty lines later used to hand the same timeout to a blanket catch and
     // report "no bridge answered", failing a launch that worked -- and the
     // retry that answer invites is then refused as "already running".
-    const b = await slotHoldingBridge();
+    // Every caller is accepted and never answered, so whoever dials first
+    // holds this port's one call slot for as long as the test needs.
+    let holderConnected!: () => void;
+    const connected = new Promise<void>((r) => (holderConnected = r));
+    const b = await lateBridge({ onConnection: () => holderConnected(), release: false });
     const held: Promise<unknown>[] = [];
     try {
-      const client = await connectWith(scriptProject(
-        "Start-Sleep -Milliseconds 1200\n" + `Write-Output 'bridge LIVE on ${b.port}'\n`,
-        b.port,
-      ));
+      const client = await connectWith(lateMarkerProject(b));
       const call = client.callTool({ name: "defold_run", arguments: {} });
-      // Only once the preflight has dialed -- otherwise the holder would be in
-      // the slot first and the preflight itself would refuse the launch.
-      await b.firstDial;
+      // Only once the preflight is over (the script has started) -- otherwise
+      // the holder would be in the slot first and the preflight itself would
+      // refuse the launch. Then the holder takes the slot, and only then is
+      // the script let through to print its marker.
+      await b.up;
       held.push(bridgeCall({ cmd: "ping" }, b.port, 20_000).catch(() => {}));
+      await connected;
+      b.release();
       expect(textOf(await call)).toContain("bridge LIVE on");
     } finally {
       await b.close();
@@ -671,12 +727,7 @@ describe("documented behaviour with no other coverage", () => {
     // script's own stdout rather than from anything this process can see.
     const b = await lateBridge();
     try {
-      const proj = scriptProject(
-        "param([switch]$SkipBuild)\n" +
-        "Write-Output \"skipbuild=$SkipBuild\"\n" +
-        `Write-Output 'bridge LIVE on ${b.port}'\n`,
-        b.port,
-      );
+      const proj = lateMarkerProject(b, "param([switch]$SkipBuild)\n", "Write-Output \"skipbuild=$SkipBuild\"\n");
       const client = await connectWith(proj);
       const res = await client.callTool({ name: "defold_run", arguments: { skip_build: true } });
       expect(textOf(res)).toContain("skipbuild=True");
@@ -688,12 +739,7 @@ describe("documented behaviour with no other coverage", () => {
   it("defold_run leaves -SkipBuild off by default", async () => {
     const b = await lateBridge();
     try {
-      const proj = scriptProject(
-        "param([switch]$SkipBuild)\n" +
-        "Write-Output \"skipbuild=$SkipBuild\"\n" +
-        `Write-Output 'bridge LIVE on ${b.port}'\n`,
-        b.port,
-      );
+      const proj = lateMarkerProject(b, "param([switch]$SkipBuild)\n", "Write-Output \"skipbuild=$SkipBuild\"\n");
       const client = await connectWith(proj);
       const res = await client.callTool({ name: "defold_run", arguments: {} });
       expect(textOf(res)).toContain("skipbuild=False");

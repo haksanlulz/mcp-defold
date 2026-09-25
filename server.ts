@@ -102,6 +102,11 @@ export class BridgeQueueTimeout extends Error {}
 // string-matching one.
 export class BridgeSocketTimeout extends Error {}
 
+// The dial itself failed: nothing accepted the connection (refused, or no
+// route). The one failure that says the port is empty. Every other failure
+// happens after something accepted the dial, so it says the port is held.
+export class BridgeUnreachable extends Error {}
+
 export function bridgeCall(req: BridgeReq, port: number, timeoutMs = 8000): Promise<any> {
   const queuedAt = Date.now();
   const prev = inFlight.get(port) ?? Promise.resolve();
@@ -166,7 +171,11 @@ function bridgeSocketCall(req: BridgeReq, port: number, timeoutMs: number, budge
     const timer = setTimeout(() => {
       finish(() => reject(new BridgeSocketTimeout(`bridge timeout after ${budgetMs}ms on ${BRIDGE_HOST}:${port} (is the game running? use defold_run)`)));
     }, timeoutMs);
-    sock.on("connect", () => sock.write(JSON.stringify(req) + "\n"));
+    let connected = false;
+    sock.on("connect", () => {
+      connected = true;
+      sock.write(JSON.stringify(req) + "\n");
+    });
     sock.on("data", (d) => {
       // A socket emits Buffers unless setEncoding() was called, which this one
       // never does -- so `d` is a Buffer at runtime. @types/node 26 types the
@@ -202,7 +211,10 @@ function bridgeSocketCall(req: BridgeReq, port: number, timeoutMs: number, budge
       finish(() => reject(new Error(`bridge closed before completing a reply (got: ${got.slice(0, 200)})`)));
     });
     sock.on("error", (e) => {
-      finish(() => reject(new Error(`bridge unreachable on ${BRIDGE_HOST}:${port} (${e.message}). Launch with defold_run.`)));
+      // Same message either way; only the type differs. An error after the
+      // connect (a reset) is not an empty port, so it is not BridgeUnreachable.
+      const msg = `bridge unreachable on ${BRIDGE_HOST}:${port} (${e.message}). Launch with defold_run.`;
+      finish(() => reject(connected ? new Error(msg) : new BridgeUnreachable(msg)));
     });
   });
 }
@@ -691,15 +703,11 @@ export function createServer(projects?: Record<string, Project>) {
           // has to refuse the launch rather than invite one that ends up
           // driving the old instance.
           //
-          // Three completed-dial outcomes are still read as an empty port:
-          // non-JSON, a reply that is not an object, and a hang-up before a
-          // reply. Each of those also proves something accepted the connection,
-          // so the honest reading is "occupied" -- but the four tests that
-          // simulate "no game yet" do it by destroying the first socket on
-          // accept, so folding them in is a fixture change rather than a guard
-          // change and belongs in its own pass. Recorded here so it reads as a
-          // decision rather than an oversight.
-          if (e instanceof BridgeQueueTimeout || e instanceof BridgeSocketTimeout) alreadyLive = true;
+          // Non-JSON, a reply that is not an object, and a hang-up or reset
+          // before a reply are the same evidence again: each proves something
+          // accepted the connection. So the rule is the dial, not the reply:
+          // only BridgeUnreachable (nothing accepted it) reads as an empty port.
+          if (!(e instanceof BridgeUnreachable)) alreadyLive = true;
         }
         if (alreadyLive) {
           throw new Error(
