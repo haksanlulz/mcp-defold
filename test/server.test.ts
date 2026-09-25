@@ -769,6 +769,42 @@ describe("documented behaviour with no other coverage", () => {
     }
   });
 
+  it("log lines that are not a list of strings come back as the same JSON from both tools", async () => {
+    // defold_log checked the `lines` shape inline and fell back to compact
+    // JSON, while defold_bridge's fallback for the same reply is the
+    // pretty-printed JSON frameOrJson gives. One reply, two renderings. An
+    // array holding a non-string also joined to "[object Object]".
+    const replies = [
+      { lines: "INFO boot" },
+      { lines: ["INFO boot", { level: "warn" }] },
+    ];
+    let next = 0;
+    const sockets: net.Socket[] = [];
+    const srv = net.createServer((sock) => {
+      sockets.push(sock);
+      sock.on("error", () => {});
+      sock.on("data", () => {
+        sock.write(JSON.stringify(replies[Math.floor(next++ / 2)]) + "\n");
+        sock.end();
+      });
+    });
+    const port = await new Promise<number>((r) =>
+      srv.listen(0, "127.0.0.1", () => r((srv.address() as net.AddressInfo).port)),
+    );
+    try {
+      const client = await connectWith({ root: ".", port, runScript: "r.ps1" });
+      for (const reply of replies) {
+        const log = textOf(await client.callTool({ name: "defold_log", arguments: {} }));
+        const raw = textOf(await client.callTool({ name: "defold_bridge", arguments: { cmd: "log" } }));
+        expect(log).toBe(raw);
+        expect(JSON.parse(log).lines).toEqual(reply.lines);
+      }
+    } finally {
+      for (const s of sockets) s.destroy();
+      await new Promise<void>((r) => srv.close(() => r()));
+    }
+  });
+
   it("bridgeCall names a bridge that hung up before replying", async () => {
     // Exactly what a game quitting mid-request produces, which is defold_stop's
     // ordinary race. It was the only bridgeCall failure path without a test.

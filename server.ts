@@ -342,6 +342,15 @@ function frameOrJson(r: any): string {
   return typeof r?.frame === "string" ? r.frame : JSON.stringify(r, null, 2);
 }
 
+// The same rule one field over, for defold_log: `lines` is a list of strings
+// or it is not log lines. Its fallback is frameOrJson's, so a reply that is
+// not a log reads the same from defold_log and from defold_bridge.
+function linesOrJson(r: any): string {
+  const lines = r?.lines;
+  if (Array.isArray(lines) && lines.every((l) => typeof l === "string")) return lines.join("\n");
+  return JSON.stringify(r, null, 2);
+}
+
 // Shared by defold_log and defold_test: a caller-supplied line count, or the
 // tool's own default when nothing was passed.
 //
@@ -769,7 +778,7 @@ export function createServer(projects?: Record<string, Project>) {
       case "defold_log": {
         const tail = tailLines(args.tail, 40);
         const r = await bridgeCall({ cmd: "log", tail }, p.port);
-        return text(Array.isArray(r.lines) ? r.lines.join("\n") : JSON.stringify(r));
+        return text(linesOrJson(r));
       }
       case "defold_bridge": {
         const cmd = commandArg(args.cmd);
