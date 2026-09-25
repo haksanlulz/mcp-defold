@@ -709,7 +709,7 @@ export function createServer(projects?: Record<string, Project>) {
         } catch (e) {
           // A ping that never left the queue is not evidence of an empty port.
           // It means another bridge call is holding the slot, and a call only
-          // holds the slot by having connected -- something is answering there.
+          // holds the slot by having connected -- something accepted its dial.
           // Reading that as "safe to launch" put a second engine on top of a
           // running game, which is the one thing this preflight exists to stop.
           //
@@ -725,8 +725,10 @@ export function createServer(projects?: Record<string, Project>) {
           // accepted the connection. So the rule is the dial, not the reply:
           // only BridgeUnreachable (nothing accepted it) reads as an empty port.
           if (e instanceof BridgeQueueTimeout) {
-            // Never dialed, so nothing failed to answer it. Another call of
-            // this server is connected there: a live bridge, not a wedged one.
+            // Never dialed, so nothing failed to answer THIS ping. Another call
+            // of this server holds the slot, so something accepted its dial.
+            // Whether that is a live game or a wedged one is not known until
+            // that call finishes, so the refusal claims neither.
             alreadyLive = true;
             queued = true;
           } else if (!(e instanceof BridgeUnreachable)) {
@@ -739,7 +741,7 @@ export function createServer(projects?: Record<string, Project>) {
         }
         if (alreadyLive && silentHolder === undefined) {
           throw new Error(queued
-            ? `a bridged game is already running on port ${p.port} and another bridge call is still connected to it; let that call finish, or stop the game with defold_stop first`
+            ? `something is already running on port ${p.port}: another bridge call of this server is still connected to it, so this ping never dialed. Let that call finish, then call defold_run again; if the port is still held, that refusal says how to clear it (defold_stop now would queue behind the same call)`
             : `a bridged game is already running on port ${p.port}; stop it with defold_stop first`);
         }
         if (alreadyLive) {

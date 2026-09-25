@@ -420,9 +420,9 @@ describe("mcp-defold server", () => {
     // A concurrent bridge call holds the port's slot, so the preflight ping
     // spends its whole budget queued and never dials. Reading that as "nothing
     // answered" launched a second engine over a running game: a call can only
-    // hold the slot by having connected, so a queue timeout is evidence FOR a
-    // live bridge. With the bug the run script is spawned and the error is
-    // "run failed" instead.
+    // hold the slot by having connected, so a queue timeout is evidence that
+    // something holds the port. With the bug the run script is spawned and the
+    // error is "run failed" instead.
     const sockets: net.Socket[] = [];
     const srv = net.createServer((sock) => {
       sockets.push(sock);
@@ -437,10 +437,11 @@ describe("mcp-defold server", () => {
       const client = await connectWith({ root: ".", port, runScript: "r.ps1" });
       const err = String(await client.callTool({ name: "defold_run", arguments: {} }).catch((e: Error) => e));
       expect(err).toMatch(/already running on port .*defold_stop/);
-      // The ping never dialed, so nothing failed to answer it. Another call of
-      // this server is connected: a live bridge, not a wedged one.
-      expect(err).toContain("another bridge call is still connected");
-      expect(err).not.toContain("wedged");
+      // The ping never dialed, so nothing failed to answer IT. Another call of
+      // this server holds the slot. This fixture's holder accepted that call's
+      // dial and never answers, so the refusal must not claim a live game.
+      expect(err).toContain("another bridge call of this server is still connected");
+      expect(err).not.toContain("a bridged game is already running");
       expect(err).not.toContain("did not answer a ping");
     } finally {
       await holder;
