@@ -8,7 +8,7 @@ I built it because tests and simulators kept passing on builds of my own games t
 
 | Tool | What it does |
 |------|--------------|
-| `defold_run` | Build with the bridge enabled and launch, detached. Returns when the bridge answers a ping from this server, not just when the run script says it should. The one exception is a ping that never leaves the per-port queue, which means another call is already connected there. Refuses to launch a second engine when anything is holding the port, whether a bridge that answers or one that accepts the dial and then says nothing; `defold_stop` first. `skip_build` relaunches fast. |
+| `defold_run` | Build with the bridge enabled and launch, detached. Returns when the bridge answers a ping from this server, not just when the run script says it should. The one exception is a ping that never leaves the per-port queue, which means another call is already connected there. Before launching it pings the port and refuses in three cases, one test each: a bridged game already answers, the ping times out waiting for the slot (another call is connected), or the port is held by something that never answers. Any other failed ping (refused dial, non-JSON reply, non-object reply, hang-up) reads as an empty port and the launch goes ahead. On a refusal, `defold_stop` first. `skip_build` relaunches fast. |
 | `defold_stop` | Quit the running game cleanly. |
 | `defold_start` | Skip the front-end (title/chargen) and begin a run. `options` passes game-defined start options through. |
 | `defold_input` | Press input triggers in order, then return the screen. |
