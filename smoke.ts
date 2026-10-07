@@ -45,7 +45,7 @@ const TSX_CLI = join(HERE, "node_modules", "tsx", "dist", "cli.mjs");
 const TIMEOUT_MS = 30_000;
 
 const EXPECTED_TOOLS = [
-  "defold_run", "defold_stop", "defold_start", "defold_input", "defold_screen",
+  "defold_run", "defold_stop", "defold_start", "defold_input", "defold_screen", "defold_screenshot",
   "defold_state", "defold_log", "defold_bridge", "defold_test",
 ];
 

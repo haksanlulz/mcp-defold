@@ -13,6 +13,7 @@ I built it because tests and simulators kept passing on builds of my own games t
 | `defold_start` | Skip the front-end (title/chargen) and begin a run. `options` passes game-defined start options through. |
 | `defold_input` | Press input triggers in order, then return the screen. |
 | `defold_screen` | The current screen as a composed text frame. |
+| `defold_screenshot` | A PNG of the game's real window, captured without bringing it to the front (Windows, PrintWindow). For what the text frame cannot show: fonts, colours, layout, sprites. |
 | `defold_state` | Compact game-state JSON (fields are game-defined). |
 | `defold_log` | Tail of the game's mirrored debug log. |
 | `defold_bridge` | Raw passthrough for game-specific bridge commands. |

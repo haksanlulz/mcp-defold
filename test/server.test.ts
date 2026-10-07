@@ -209,7 +209,7 @@ afterAll(() => {
 });
 
 describe("mcp-defold server", () => {
-  it("exposes all nine tools", async () => {
+  it("exposes all ten tools", async () => {
     const client = await connect();
     const { tools } = await client.listTools();
     expect(tools.map((t) => t.name).sort()).toEqual([
@@ -218,6 +218,7 @@ describe("mcp-defold server", () => {
       "defold_log",
       "defold_run",
       "defold_screen",
+      "defold_screenshot",
       "defold_start",
       "defold_state",
       "defold_stop",
@@ -399,6 +400,22 @@ describe("mcp-defold server", () => {
       client.callTool({ name: "defold_screen", arguments: { project: "" } }),
     ).rejects.toThrow(/project must be a non-empty string/);
   });
+
+  it.runIf(process.platform === "win32")("defold_screenshot names the port when nothing listens", async () => {
+    const dead = await deadPort();
+    const client = await connectWith({ root: ".", port: dead, runScript: "r.ps1" });
+    await expect(
+      client.callTool({ name: "defold_screenshot", arguments: {} }),
+    ).rejects.toThrow(new RegExp(`nothing is listening on port ${dead}`));
+  }, PWSH_TIMEOUT);
+
+  it.runIf(process.platform === "win32")("defold_screenshot refuses a listener with no window", async () => {
+    // The fake bridge is this test process: it listens but owns no window.
+    const client = await connect();
+    await expect(
+      client.callTool({ name: "defold_screenshot", arguments: {} }),
+    ).rejects.toThrow(/has no window to capture/);
+  }, PWSH_TIMEOUT);
 
   it("defold_test errors when the project has no testScript", async () => {
     const client = await connect();

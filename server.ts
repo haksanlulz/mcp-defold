@@ -21,6 +21,7 @@ import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { tmpdir } from "node:os";
 
 const BRIDGE_HOST = "127.0.0.1";
 
@@ -644,6 +645,12 @@ export function createServer(projects?: Record<string, Project>) {
         inputSchema: { type: "object", properties: { ...PROJECT_PROP } },
       },
       {
+        name: "defold_screenshot",
+        description:
+          "A picture of the running game's real window (PNG), captured without bringing it to the front. Use it for anything the composed text frame of defold_screen cannot show: fonts, colours, layout, sprites. Windows only. The game redraws on input, so a state changed through defold_bridge may need a key press first.",
+        inputSchema: { type: "object", properties: { ...PROJECT_PROP } },
+      },
+      {
         name: "defold_state",
         description: "Compact state of the running game as JSON. Fields are game-defined (position, health, score, flags, whatever the bridge reports).",
         inputSchema: { type: "object", properties: { ...PROJECT_PROP } },
@@ -825,6 +832,29 @@ export function createServer(projects?: Record<string, Project>) {
       case "defold_screen": {
         const r = await bridgeCall({ cmd: "screen" }, p.port);
         return text(frameOrJson(r));
+      }
+      case "defold_screenshot": {
+        if (process.platform !== "win32") {
+          throw new Error("defold_screenshot needs Windows (it captures the window with PrintWindow)");
+        }
+        const here = dirname(fileURLToPath(import.meta.url));
+        const out = join(tmpdir(), "mcp-defold", `port${p.port}-${Date.now()}.png`);
+        const r = await runPwsh(
+          ["-File", join(here, "screenshot.ps1"), "-Port", String(p.port), "-Out", out],
+          tmpdir(), 30_000,
+        );
+        const shot = /^SHOT (.+) (\d+)x(\d+)\s*$/m.exec(r.out);
+        if (r.code !== 0 || !shot) {
+          const fail = /FAIL: (.+)/.exec(r.out);
+          throw new Error(fail ? fail[1].trim() : `screenshot failed (exit ${r.code}): ${r.out.slice(-500)}`);
+        }
+        const data = readFileSync(shot[1]).toString("base64");
+        return {
+          content: [
+            { type: "image" as const, data, mimeType: "image/png" },
+            { type: "text" as const, text: `${shot[1]} (${shot[2]}x${shot[3]})` },
+          ],
+        };
       }
       case "defold_state": {
         const r = await bridgeCall({ cmd: "state" }, p.port);
