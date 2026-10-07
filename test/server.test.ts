@@ -31,6 +31,8 @@ function fakeBridgeResponse(req: any): any {
       return { location: "start", hp: 10 };
     case "input":
       if (req.trigger === "key_broken") return { error: "no such trigger" };
+      if (req.trigger === "key_die") return { ok: true, handled: true, mode_before: "combat", mode: "combat", down: true, in_combat: true, turn: "enemy" };
+      if (req.trigger === "key_look") return { ok: true, handled: true, mode_before: "overworld", mode: "look", down: false, in_combat: false };
       return { ok: true, trigger: req.trigger };
     case "start":
       return { ok: true, got: req };
@@ -251,6 +253,50 @@ describe("mcp-defold server", () => {
     expect(mine[1].trigger).toBe("key_e");
     expect(textOf(res)).toContain("day 1");
   });
+
+  it("defold_input stop_on ends the batch at the key that met it, and says so", async () => {
+    const client = await connect();
+    const before = received.length;
+    const res = await client.callTool({
+      name: "defold_input",
+      arguments: { triggers: ["key_w", "key_die", "key_e"], stop_on: ["down"] },
+    });
+    const mine = received.slice(before);
+    expect(mine.map((r) => r.cmd)).toEqual(["input", "input", "screen"]);
+    expect(textOf(res)).toMatch(/stopped after key_die \(2 of 3\): down/);
+    expect(textOf(res)).toContain("day 1");
+  });
+
+  it("defold_input reports a mode change per key", async () => {
+    const client = await connect();
+    const res = await client.callTool({
+      name: "defold_input",
+      arguments: { triggers: ["key_look", "key_w"], stop_on: ["mode_change"] },
+    });
+    expect(textOf(res)).toMatch(/key_look: overworld -> look/);
+    expect(textOf(res)).toMatch(/stopped after key_look \(1 of 2\): mode_change/);
+  });
+
+  it("defold_input refuses an unknown stop_on condition by name", async () => {
+    const client = await connect();
+    await expect(
+      client.callTool({ name: "defold_input", arguments: { triggers: ["key_w"], stop_on: ["sunrise"] } }),
+    ).rejects.toThrow(/stop_on 'sunrise'/);
+  });
+
+  it("defold_stop says when the port is still held after quit", async () => {
+    // The fake bridge answers quit and keeps listening, as a wedged engine would.
+    const client = await connect();
+    const res = await client.callTool({ name: "defold_stop", arguments: {} });
+    expect(textOf(res)).toMatch(/still listening on port \d+/);
+  }, 15_000);
+
+  it.runIf(process.platform === "win32")("defold_stop force refuses to kill a listener that is not a Defold engine", async () => {
+    const client = await connect();
+    await expect(
+      client.callTool({ name: "defold_stop", arguments: { force: true } }),
+    ).rejects.toThrow(/not a Defold engine/);
+  }, PWSH_TIMEOUT);
 
   it("defold_input names the failing trigger and what was already applied", async () => {
     const client = await connect();

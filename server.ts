@@ -473,6 +473,33 @@ function triggerList(v: unknown): string[] {
   return v as string[];
 }
 
+// Conditions defold_input can stop a batch on, read from the bridge's per-key
+// reply (mode_before / mode / down / turn / scene / in_combat). A bridge that
+// does not report a field never meets the condition that reads it.
+export const STOP_CONDITIONS = ["down", "mode_change", "player_turn", "scene", "combat_end"] as const;
+
+function stopList(v: unknown): string[] {
+  if (v === undefined) return [];
+  if (!Array.isArray(v)) throw new Error("stop_on must be an array of condition names");
+  for (const c of v) {
+    if (typeof c !== "string" || !(STOP_CONDITIONS as readonly string[]).includes(c)) {
+      throw new Error(`stop_on '${String(c)}' is not a condition; use: ${STOP_CONDITIONS.join(", ")}`);
+    }
+  }
+  return v as string[];
+}
+
+export function stopMet(conds: string[], r: any, wasInCombat: boolean): string | null {
+  for (const c of conds) {
+    if (c === "down" && r?.down === true) return c;
+    if (c === "mode_change" && r?.mode_before !== undefined && r.mode !== r.mode_before) return c;
+    if (c === "player_turn" && r?.turn === "player") return c;
+    if (c === "scene" && r?.scene === true) return c;
+    if (c === "combat_end" && wasInCombat && r?.in_combat === false) return c;
+  }
+  return null;
+}
+
 // --- server ---------------------------------------------------------------------
 
 
@@ -606,8 +633,15 @@ export function createServer(projects?: Record<string, Project>) {
       },
       {
         name: "defold_stop",
-        description: "Quit the running bridged game cleanly (sends the bridge quit command).",
-        inputSchema: { type: "object", properties: { ...PROJECT_PROP } },
+        description:
+          "Quit the running bridged game cleanly (sends the bridge quit command), then wait for the port to be free, and say if it is still held. force=true kills the Defold engine listening on the project's port by its PID (Windows), for a game whose bridge no longer answers; anything that is not a Defold engine is refused.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            ...PROJECT_PROP,
+            force: { type: "boolean", description: "Kill the engine on the port by PID instead of asking it to quit (default false)" },
+          },
+        },
       },
       {
         name: "defold_start",
@@ -633,6 +667,11 @@ export function createServer(projects?: Record<string, Project>) {
               type: "array",
               items: { type: "string" },
               description: 'Trigger ids pressed in order, e.g. ["key_w","key_w","key_e"]',
+            },
+            stop_on: {
+              type: "array",
+              items: { type: "string", enum: ["down", "mode_change", "player_turn", "scene", "combat_end"] },
+              description: "Stop the batch after the first key that meets any of these (read from the game's per-key reply); the result says which key and why",
             },
           },
           required: ["triggers"],
@@ -805,8 +844,35 @@ export function createServer(projects?: Record<string, Project>) {
         return text(r.out.trim());
       }
       case "defold_stop": {
+        const force = boolArg(args.force, "force");
+        if (force) {
+          if (process.platform !== "win32") throw new Error("defold_stop force needs Windows");
+          const here = dirname(fileURLToPath(import.meta.url));
+          const k = await runPwsh(["-File", join(here, "stop.ps1"), "-Port", String(p.port)], tmpdir(), 30_000);
+          const killed = /^KILLED (\d+) (\S+)/m.exec(k.out);
+          if (k.code !== 0 || !killed) {
+            const fail = /FAIL: (.+)/.exec(k.out);
+            throw new Error(fail ? fail[1].trim() : `force stop failed (exit ${k.code}): ${k.out.slice(-500)}`);
+          }
+          return text(`killed ${killed[2]} (pid ${killed[1]}); port ${p.port} is free`);
+        }
         const r = await bridgeCall({ cmd: "quit" }, p.port);
-        return text(JSON.stringify(r));
+        // Wait for the engine to let go of the port, so a defold_run straight
+        // after does not find it still held (bridge backlog 13).
+        const deadline = Date.now() + 5_000;
+        let free = false;
+        while (Date.now() < deadline) {
+          const held = await new Promise<boolean>((res) => {
+            const sock = net.connect({ host: "127.0.0.1", port: p.port });
+            sock.once("connect", () => { sock.destroy(); res(true); });
+            sock.once("error", () => res(false));
+          });
+          if (!held) { free = true; break; }
+          await new Promise((res) => setTimeout(res, 200));
+        }
+        return text(free
+          ? `${JSON.stringify(r)}\nport ${p.port} is free`
+          : `${JSON.stringify(r)}\nthe game answered quit but is still listening on port ${p.port} after 5s; defold_stop {force: true} kills it by PID`);
       }
       case "defold_start": {
         const extra = objectArg(args.options, "options");
@@ -815,8 +881,13 @@ export function createServer(projects?: Record<string, Project>) {
       }
       case "defold_input": {
         const triggers = triggerList(args.triggers);
+        const conds = stopList(args.stop_on);
         const applied: string[] = [];
-        for (const t of triggers) {
+        const report: string[] = [];
+        let stopped = "";
+        let inCombat = false;
+        for (let i = 0; i < triggers.length; i++) {
+          const t = triggers[i];
           const r = await bridgeCall({ cmd: "input", trigger: t }, p.port);
           if (r?.error || r?.ok === false) {
             throw new Error(
@@ -825,9 +896,18 @@ export function createServer(projects?: Record<string, Project>) {
             );
           }
           applied.push(t);
+          // A per-key line only when the game reports something worth reading.
+          if (r?.mode_before !== undefined && r.mode !== r.mode_before) {
+            report.push(`${t}: ${r.mode_before} -> ${r.mode}`);
+          }
+          if (r?.handled === false) report.push(`${t}: not handled`);
+          const met = stopMet(conds, r, inCombat);
+          if (r?.in_combat !== undefined) inCombat = r.in_combat === true;
+          if (met) { stopped = `stopped after ${t} (${i + 1} of ${triggers.length}): ${met}`; break; }
         }
         const screen = await bridgeCall({ cmd: "screen" }, p.port);
-        return text(frameOrJson(screen));
+        const head = [...report, ...(stopped ? [stopped] : [])];
+        return text((head.length ? `[${head.join("; ")}]\n` : "") + frameOrJson(screen));
       }
       case "defold_screen": {
         const r = await bridgeCall({ cmd: "screen" }, p.port);
