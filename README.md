@@ -153,15 +153,6 @@ Mutation probes, both re-run against the 80-test suite on 2026-10-13. Swapping t
 
 Assertion policy: assert behavior and payloads, never that a function was called. A grep for `toHaveBeenCalled` finds zero sites in this suite; nothing was pruned.
 
-## What I'd do differently
-
-- **Test the failure path with a failing input.** `defold_test` returned `exit N` as a normal result for every N, so a red suite and a green one looked the same to the caller. It had only ever been run against a passing suite, so nothing could show that. A non-zero exit is now a tool error that carries the code and a tail you can widen.
-- **Check the claim directly, not through someone else's output.** `defold_run` reported a live game when the run script printed its marker, while the README said it returned when the bridge answered. It now pings the bridge itself.
-- **Error messages must not send the caller in a circle.** Early refusal messages told the caller to launch with `defold_run`, which would itself refuse while something held the port. Each refusal now names a recovery step that works from that state.
-- **Keep one copy, and keep machine config out of it.** This server and a second copy were edited separately for weeks. The public copy had the test suite, a process-tree kill and safer socket reads. The copy actually driving games had hardcoded local paths and project names. They are one tree now, and the project registry is an untracked `projects.json`, so local paths cannot reach a commit.
-
-Still open: the end-to-end loop (build, run, start, input, read the screen) against a real game is exercised by hand, not in CI, because it needs Defold and a game with its own bridge.
-
 ## AI assistance
 
 This project was built with AI assistance (Claude). Correctness was established by the test suite (tool handlers driven end-to-end through a real MCP client against a fake in-process bridge that speaks the actual wire protocol, plus failure-path tests for the TCP layer), an offline smoke run that spawns the real server over stdio and checks its error paths (`npm run smoke`), and playtesting my own games with it. I review the code and am responsible for it.
