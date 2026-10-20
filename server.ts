@@ -563,32 +563,24 @@ function acceptedArgsOf(tools: ReadonlyArray<{ name: string; inputSchema?: unkno
 }
 
 export function createServer(projects?: Record<string, Project>) {
-  // A registry that will not load is the likeliest first-run failure, and the
-  // error text already says how to fix it. Loading it eagerly sent that text
-  // to the stderr of a process that died before `initialize`, so an MCP client
-  // showed "server disconnected" and the fix lived in a log file. Hold the
-  // error instead and raise it from the first tool call, where a client
-  // renders it. Nothing half-built reaches a handler: loadProjects either
-  // returns a whole registry or throws, so this stays empty on failure.
-  let registry: Record<string, Project> = {};
-  let registryError: Error | null = null;
-  if (projects === undefined) {
+  // Pin the source path and the default NAME for this server's lifetime.
+  // Each tool resolves against one freshly loaded, fully validated snapshot;
+  // a bad edit must fail before any socket or script runs, never use stale data.
+  const registryPath = process.env.MCP_DEFOLD_PROJECTS ?? join(dirname(fileURLToPath(import.meta.url)), "projects.json");
+  let defaultProject = process.env.MCP_DEFOLD_DEFAULT;
+  if (defaultProject === undefined) {
     try {
-      registry = loadProjects();
-    } catch (e) {
-      registryError = e instanceof Error ? e : new Error(String(e));
+      defaultProject = Object.keys(projects ?? loadProjects(registryPath))[0];
+    } catch {
+      // Keep initialize/tools/list available. The next tool call reports the
+      // registry error, or recovers if the file has since been repaired.
     }
-  } else {
-    registry = projects;
   }
 
-  const DEFAULT_PROJECT = process.env.MCP_DEFOLD_DEFAULT ?? Object.keys(registry)[0] ?? "";
-
   function resolveProject(args: Record<string, unknown>): Project {
-    // Re-raised on EVERY call: a registry that never loaded is not transient,
-    // and a caller who fixes it restarts the server anyway.
-    if (registryError) throw registryError;
-    const name = projectArg(args.project, DEFAULT_PROJECT);
+    const registry = projects ?? loadProjects(registryPath);
+    defaultProject ??= Object.keys(registry)[0];
+    const name = projectArg(args.project, defaultProject ?? "");
     // Object.prototype keys ('toString', 'constructor', 'hasOwnProperty',
     // '__proto__') are truthy on any plain object, and a registry is one --
     // JSON.parse'd, or a caller's literal. A bare index handed back an
@@ -612,9 +604,7 @@ export function createServer(projects?: Record<string, Project>) {
   const PROJECT_PROP = {
     project: {
       type: "string",
-      description: DEFAULT_PROJECT
-        ? `Registered project to target (default '${DEFAULT_PROJECT}').`
-        : "Registered project to target.",
+      description: "Registered project to target. Registry changes apply on the next call; the default project name is pinned at startup (or the first valid registry).",
     },
   };
 
