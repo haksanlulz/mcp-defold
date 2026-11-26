@@ -562,6 +562,35 @@ function acceptedArgsOf(tools: ReadonlyArray<{ name: string; inputSchema?: unkno
   return Object.keys(props ?? {});
 }
 
+// MCP security audit 2026-11-25: every tool declares its hints; withAnnotations
+// refuses to list a tool that has none, so a new tool cannot ship unclassified.
+// All local: nothing here reaches the network. defold_stop ends a running game
+// and defold_bridge can run any command the game's bridge accepts, so both are
+// declared destructive.
+const READ = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
+const ACT = { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false };
+const DESTRUCTIVE = { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false };
+const TOOL_ANNOTATIONS: Record<string, typeof READ> = {
+  defold_run: ACT,
+  defold_stop: DESTRUCTIVE,
+  defold_start: ACT,
+  defold_input: ACT,
+  defold_screen: READ,
+  defold_screenshot: READ,
+  defold_state: READ,
+  defold_log: READ,
+  defold_bridge: DESTRUCTIVE,
+  defold_test: ACT,
+};
+
+function withAnnotations<T extends { name: string }>(tools: T[]): (T & { annotations: (typeof TOOL_ANNOTATIONS)[string] })[] {
+  return tools.map((t) => {
+    const annotations = TOOL_ANNOTATIONS[t.name];
+    if (!annotations) throw new Error(`tool ${t.name} has no annotations: add it to TOOL_ANNOTATIONS`);
+    return { ...t, annotations };
+  });
+}
+
 export function createServer(projects?: Record<string, Project>) {
   // Pin the source path and the default NAME for this server's lifetime.
   // Each tool resolves against one freshly loaded, fully validated snapshot;
@@ -722,7 +751,7 @@ export function createServer(projects?: Record<string, Project>) {
         },
       },
   ];
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }));
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: withAnnotations(TOOLS) }));
 
   server.setRequestHandler(CallToolRequestSchema, async (req) => {
     const { name, arguments: args = {} } = req.params;
