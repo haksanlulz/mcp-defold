@@ -461,13 +461,23 @@ function projectArg(v: unknown, fallback: string): string {
 
 // Trigger ids go to the game verbatim. Coercing them meant a client mistake
 // arrived as the trigger '[object Object]' and came back as a bridge error.
+// Each trigger is one bridge call, so the list is capped (MCP security audit 2026-11-25): one call
+// could otherwise press keys for hours. An id is a game action name, never long.
+export const MAX_TRIGGERS = 100;
+export const MAX_TRIGGER_ID = 64;
 function triggerList(v: unknown): string[] {
   if (!Array.isArray(v) || v.length === 0) {
     throw new Error("triggers must be a non-empty array of trigger id strings");
   }
+  if (v.length > MAX_TRIGGERS) {
+    throw new Error(`triggers takes at most ${MAX_TRIGGERS} triggers per call, got ${v.length}`);
+  }
   v.forEach((t, i) => {
     if (typeof t !== "string" || !t) {
       throw new Error(`triggers[${i}] must be a non-empty string, got ${typeof t}`);
+    }
+    if (t.length > MAX_TRIGGER_ID) {
+      throw new Error(`triggers[${i}] must be at most ${MAX_TRIGGER_ID} characters, got ${t.length}`);
     }
   });
   return v as string[];
@@ -684,8 +694,9 @@ export function createServer(projects?: Record<string, Project>) {
             ...PROJECT_PROP,
             triggers: {
               type: "array",
-              items: { type: "string" },
-              description: 'Trigger ids pressed in order, e.g. ["key_w","key_w","key_e"]',
+              items: { type: "string", maxLength: MAX_TRIGGER_ID },
+              maxItems: MAX_TRIGGERS,
+              description: `Trigger ids pressed in order, e.g. ["key_w","key_w","key_e"]; at most ${MAX_TRIGGERS} per call`,
             },
             stop_on: {
               type: "array",

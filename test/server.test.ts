@@ -11,6 +11,8 @@ import {
   createServer,
   loadProjects,
   markerVerdict,
+  MAX_TRIGGER_ID,
+  MAX_TRIGGERS,
   translateSpawnError,
   type Project,
 } from "../server.js";
@@ -275,6 +277,18 @@ describe("mcp-defold server", () => {
     });
     expect(textOf(res)).toMatch(/key_look: overworld -> look/);
     expect(textOf(res)).toMatch(/stopped after key_look \(1 of 2\): mode_change/);
+  });
+
+  // MCP security audit 2026-11-25 (lower-severity "no caps on some arguments"): triggers took any
+  // number of ids of any length, one bridge call each, so one call could press keys for hours.
+  it("RED LEG: defold_input refuses more than MAX_TRIGGERS triggers, or an id over MAX_TRIGGER_ID characters", async () => {
+    const client = await connect();
+    await expect(
+      client.callTool({ name: "defold_input", arguments: { triggers: Array(MAX_TRIGGERS + 1).fill("key_w") } }),
+    ).rejects.toThrow(new RegExp(`at most ${MAX_TRIGGERS} triggers`));
+    await expect(
+      client.callTool({ name: "defold_input", arguments: { triggers: ["k".repeat(MAX_TRIGGER_ID + 1)] } }),
+    ).rejects.toThrow(new RegExp(`at most ${MAX_TRIGGER_ID} characters`));
   });
 
   it("defold_input refuses an unknown stop_on condition by name", async () => {
