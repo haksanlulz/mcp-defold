@@ -298,6 +298,16 @@ describe("mcp-defold server", () => {
     ).rejects.toThrow(/not a Defold engine/);
   }, PWSH_TIMEOUT);
 
+  // MCP security audit 2026-11-25 (lower-severity): defold_screenshot captured the window of whatever
+  // process held the port, so another program on it (a browser, a chat) would be shown to the model.
+  // It now refuses anything that is not a Defold engine, as defold_stop force already did.
+  it.runIf(process.platform === "win32")("RED LEG: defold_screenshot refuses a listener that is not a Defold engine", async () => {
+    const client = await connect();
+    await expect(
+      client.callTool({ name: "defold_screenshot", arguments: {} }),
+    ).rejects.toThrow(/not a Defold engine/);
+  }, PWSH_TIMEOUT);
+
   it("defold_input names the failing trigger and what was already applied", async () => {
     const client = await connect();
     await expect(
@@ -453,14 +463,6 @@ describe("mcp-defold server", () => {
     await expect(
       client.callTool({ name: "defold_screenshot", arguments: {} }),
     ).rejects.toThrow(new RegExp(`nothing is listening on port ${dead}`));
-  }, PWSH_TIMEOUT);
-
-  it.runIf(process.platform === "win32")("defold_screenshot refuses a listener with no window", async () => {
-    // The fake bridge is this test process: it listens but owns no window.
-    const client = await connect();
-    await expect(
-      client.callTool({ name: "defold_screenshot", arguments: {} }),
-    ).rejects.toThrow(/has no window to capture/);
   }, PWSH_TIMEOUT);
 
   it("defold_test errors when the project has no testScript", async () => {

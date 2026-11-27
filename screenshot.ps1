@@ -11,7 +11,14 @@ try {
   exit 1
 }
 $proc = Get-Process -Id $conn.OwningProcess -ErrorAction SilentlyContinue
-if (-not $proc -or $proc.MainWindowHandle -eq [IntPtr]::Zero) {
+if (-not $proc) { Write-Output "FAIL: process $($conn.OwningProcess) on port $Port is gone"; exit 1 }
+# Only a Defold engine (dmengine*), the same rule as stop.ps1: another program holding the port could
+# show anything on screen, and the picture goes to the model (MCP security audit 2026-11-25).
+if ($proc.ProcessName -notlike 'dmengine*') {
+  Write-Output "FAIL: process $($proc.Id) on port $Port is $($proc.ProcessName), not a Defold engine; not capturing it"
+  exit 1
+}
+if ($proc.MainWindowHandle -eq [IntPtr]::Zero) {
   Write-Output "FAIL: process $($conn.OwningProcess) on port $Port has no window to capture"
   exit 1
 }

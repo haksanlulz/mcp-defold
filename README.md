@@ -13,7 +13,7 @@ I built it because tests and simulators kept passing on builds of my own games t
 | `defold_start` | Skip the front-end (title/chargen) and begin a run. `options` passes game-defined start options through. |
 | `defold_input` | Press input triggers in order, then return the screen. `stop_on` (`down`, `mode_change`, `player_turn`, `scene`, `combat_end`) ends the batch at the first key that meets one, read from the game's per-key reply; mode changes and unhandled keys are reported above the frame. |
 | `defold_screen` | The current screen as a composed text frame. |
-| `defold_screenshot` | A PNG of the game's real window, captured without bringing it to the front (Windows, PrintWindow). For what the text frame cannot show: fonts, colours, layout, sprites. |
+| `defold_screenshot` | A PNG of the game's real window, captured without bringing it to the front (Windows, PrintWindow). For what the text frame cannot show: fonts, colours, layout, sprites. Only a Defold engine (`dmengine*`) holding the project's port is captured; any other program there is refused, as with `defold_stop force`. |
 | `defold_state` | Compact game-state JSON (fields are game-defined). |
 | `defold_log` | Tail of the game's mirrored debug log. |
 | `defold_bridge` | Raw passthrough for game-specific bridge commands. |
@@ -133,7 +133,7 @@ The screen is text on purpose: compose whatever view carries your game's state (
 
 ## Limitations
 
-- Screens are text frames composed by the game's bridge; there are no pixel screenshots.
+- Screens are text frames composed by the game's bridge; `defold_screenshot` is the only pixel capture, and it needs Windows.
 - `defold_input` presses and releases each trigger; nothing can be held down.
 - Bridge input drives the in-game controller and can't reach the GUI front-end; `defold_start` exists because injected input can't get past menus.
 - Run and test scripts are invoked through `pwsh`; there is no other runner.
