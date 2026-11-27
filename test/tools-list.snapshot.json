@@ -1,0 +1,249 @@
+[
+  {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Raw bridge command passthrough for anything the named tools don't cover. cmd = the bridge command string; args = an object merged into the request. Returns the frame (if any) or the JSON response.",
+    "inputSchema": {
+      "properties": {
+        "args": {
+          "description": "Extra fields merged into the request",
+          "type": "object"
+        },
+        "cmd": {
+          "description": "Bridge command (e.g. 'ping', 'screen', 'advance')",
+          "type": "string"
+        },
+        "project": {
+          "description": "Registered project to target. Registry changes apply on the next call; the default project name is pinned at startup (or the first valid registry).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "cmd"
+      ],
+      "type": "object"
+    },
+    "name": "defold_bridge"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Press one or more input triggers in the running game, in order, then return the screen. Trigger ids are the game's action ids from its input bindings (e.g. key_w, key_e, key_space). NOTE: bridge input drives the in-game controller, not the GUI front-end; use defold_start to get past menus first.",
+    "inputSchema": {
+      "properties": {
+        "project": {
+          "description": "Registered project to target. Registry changes apply on the next call; the default project name is pinned at startup (or the first valid registry).",
+          "type": "string"
+        },
+        "stop_on": {
+          "description": "Stop the batch after the first key that meets any of these (read from the game's per-key reply); the result says which key and why",
+          "items": {
+            "enum": [
+              "down",
+              "mode_change",
+              "player_turn",
+              "scene",
+              "combat_end"
+            ],
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "triggers": {
+          "description": "Trigger ids pressed in order, e.g. [\"key_w\",\"key_w\",\"key_e\"]; at most 100 per call",
+          "items": {
+            "maxLength": 64,
+            "type": "string"
+          },
+          "maxItems": 100,
+          "type": "array"
+        }
+      },
+      "required": [
+        "triggers"
+      ],
+      "type": "object"
+    },
+    "name": "defold_input"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "Tail of the running game's mirrored debug log.",
+    "inputSchema": {
+      "properties": {
+        "project": {
+          "description": "Registered project to target. Registry changes apply on the next call; the default project name is pinned at startup (or the first valid registry).",
+          "type": "string"
+        },
+        "tail": {
+          "description": "Lines from the end (default 40)",
+          "type": "number"
+        }
+      },
+      "type": "object"
+    },
+    "name": "defold_log"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Build the target project with the debug bridge enabled and launch it (windowed, detached). Returns when the bridge answers (~30-90s with a build). Pass skip_build=true to relaunch the last build fast. If a bridged game is already running, stop it first with defold_stop.",
+    "inputSchema": {
+      "properties": {
+        "project": {
+          "description": "Registered project to target. Registry changes apply on the next call; the default project name is pinned at startup (or the first valid registry).",
+          "type": "string"
+        },
+        "skip_build": {
+          "description": "Skip the build; launch the existing build output (default false)",
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "name": "defold_run"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "The running game's current screen as a composed text frame: whatever view the game's bridge composes (an ASCII map + HUD for a glyph game, a score readout for an arcade game).",
+    "inputSchema": {
+      "properties": {
+        "project": {
+          "description": "Registered project to target. Registry changes apply on the next call; the default project name is pinned at startup (or the first valid registry).",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "name": "defold_screen"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "A picture of the running game's real window (PNG), captured without bringing it to the front. Use it for anything the composed text frame of defold_screen cannot show: fonts, colours, layout, sprites. Windows only. The game redraws on input, so a state changed through defold_bridge may need a key press first.",
+    "inputSchema": {
+      "properties": {
+        "project": {
+          "description": "Registered project to target. Registry changes apply on the next call; the default project name is pinned at startup (or the first valid registry).",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "name": "defold_screenshot"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Begin a run, skipping the game's front-end (title menu / character creation) via the bridge `start` command, which GUI input can't reach. `options` is passed through to the game's bridge; what it accepts is per-game (a new-game seed, a character build, a scenario id).",
+    "inputSchema": {
+      "properties": {
+        "options": {
+          "description": "Game-defined start options, merged into the bridge start request",
+          "type": "object"
+        },
+        "project": {
+          "description": "Registered project to target. Registry changes apply on the next call; the default project name is pinned at startup (or the first valid registry).",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "name": "defold_start"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "Compact state of the running game as JSON. Fields are game-defined (position, health, score, flags, whatever the bridge reports).",
+    "inputSchema": {
+      "properties": {
+        "project": {
+          "description": "Registered project to target. Registry changes apply on the next call; the default project name is pinned at startup (or the first valid registry).",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "name": "defold_state"
+  },
+  {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Quit the running bridged game cleanly (sends the bridge quit command), then wait for the port to be free, and say if it is still held. force=true kills the Defold engine listening on the project's port by its PID (Windows), for a game whose bridge no longer answers; anything that is not a Defold engine is refused.",
+    "inputSchema": {
+      "properties": {
+        "force": {
+          "description": "Kill the engine on the port by PID instead of asking it to quit (default false)",
+          "type": "boolean"
+        },
+        "project": {
+          "description": "Registered project to target. Registry changes apply on the next call; the default project name is pinned at startup (or the first valid registry).",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "name": "defold_stop"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Run the project's headless test suite (if a testScript is registered). Returns the tail of the output when the suite passes; a non-zero exit is a tool ERROR carrying the exit code and the same tail. Widen `tail` when the failing assertion is further up than the default window. Can take minutes.",
+    "inputSchema": {
+      "properties": {
+        "project": {
+          "description": "Registered project to target. Registry changes apply on the next call; the default project name is pinned at startup (or the first valid registry).",
+          "type": "string"
+        },
+        "tail": {
+          "description": "Lines from the end of the output (default 12)",
+          "type": "number"
+        }
+      },
+      "type": "object"
+    },
+    "name": "defold_test"
+  }
+]
