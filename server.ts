@@ -771,6 +771,8 @@ export function createServer(projects?: Record<string, Project>) {
     const { name, arguments: args = {} } = req.params;
     const accepted = acceptedArgsOf(TOOLS, name);
     if (accepted) validateArgs(name, accepted, args as Record<string, unknown>);
+    // Refuse oversized batches before resolveProject reads the registry.
+    const inputTriggers = name === "defold_input" ? triggerList(args.triggers) : undefined;
     const p = resolveProject(args);
     switch (name) {
       case "defold_run": {
@@ -913,7 +915,7 @@ export function createServer(projects?: Record<string, Project>) {
         return text(JSON.stringify(r));
       }
       case "defold_input": {
-        const triggers = triggerList(args.triggers);
+        const triggers = inputTriggers!;
         const conds = stopList(args.stop_on);
         const applied: string[] = [];
         const report: string[] = [];
